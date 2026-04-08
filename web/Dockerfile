@@ -1,15 +1,16 @@
 FROM php:8.2-apache
 
-# Install PHP extensions for MySQL
+# Install PHP extensions needed for MySQL
 RUN docker-php-ext-install mysqli pdo pdo_mysql
 
-# Enable Apache modules
-RUN a2enmod rewrite headers
+# Enable Apache mod_rewrite
+RUN a2enmod rewrite
+
+# Install zip/unzip for file management features
+RUN apt-get update && apt-get install -y zip unzip && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /var/www/html
 
-# Create uploads directory with proper permissions
-RUN mkdir -p /var/www/uploads && chown www-data:www-data /var/www/uploads
-
-EXPOSE 80
+# Allow .htaccess overrides
+RUN sed -i 's/AllowOverride None/AllowOverride All/g' /etc/apache2/apache2.conf
