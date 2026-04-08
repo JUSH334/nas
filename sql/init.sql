@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS permissions (
 INSERT INTO users (username, password, email, role) VALUES
 (
     'admin',
-    '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi',
+    '$2y$10$foB2CPzoTOy3HtNXDYvOl.KDQ6zsdcugeE7sCe17tmQJU4wtWFb5a',
     'admin@localhost',
     'admin'
 );
