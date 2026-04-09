@@ -51,6 +51,19 @@ CREATE TABLE IF NOT EXISTS permissions (
 );
 
 -- --------------------------------------------------------
+-- Backups table
+-- --------------------------------------------------------
+CREATE TABLE IF NOT EXISTS backups (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    filename    VARCHAR(255) NOT NULL,
+    filepath    VARCHAR(500) NOT NULL,
+    filesize    BIGINT       DEFAULT 0,
+    created_by  INT,
+    created_at  DATETIME     DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+);
+
+-- --------------------------------------------------------
 -- Seed: default admin account
 -- Password: admin123  (bcrypt hash — CHANGE THIS in production!)
 -- --------------------------------------------------------
