@@ -125,6 +125,8 @@ $users = $pdo->query('
     <a class="nav-link" href="/">📁 Files</a>
     <a class="nav-link active" href="/users.php">👥 Users</a>
     <a class="nav-link" href="/monitor.php">📊 Monitor</a>
+    <a class="nav-link" href="/logs.php">📋 Logs</a>
+    <a class="nav-link" href="/backup.php">💾 Backups</a>
   </div>
   <div class="nav-user">
     <span>Hello, <strong><?= htmlspecialchars($user['username']) ?></strong></span>

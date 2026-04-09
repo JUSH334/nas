@@ -255,6 +255,12 @@ function file_icon(string $type): string {
     <a class="nav-link" href="/users.php">👥 Users</a>
     <?php endif; ?>
     <a class="nav-link active" href="/monitor.php">📊 Monitor</a>
+    <?php if (is_admin()): ?>
+    <a class="nav-link" href="/logs.php">📋 Logs</a>
+    <?php endif; ?>
+    <?php if (is_admin()): ?>
+    <a class="nav-link" href="/backup.php">💾 Backups</a>
+    <?php endif; ?>
   </div>
   <div class="nav-user">
     <span>Hello, <strong><?= htmlspecialchars($user['username']) ?></strong></span>

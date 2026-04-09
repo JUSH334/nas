@@ -388,6 +388,12 @@ $folder_param = $folder_id ? "?folder=$folder_id" : '';
     <?php if (is_admin()): ?>
     <a class="nav-link" href="/monitor.php">📊 Monitor</a>
     <?php endif; ?>
+    <?php if (is_admin()): ?>
+    <a class="nav-link" href="/logs.php">📋 Logs</a>
+    <?php endif; ?>
+    <?php if (is_admin()): ?>
+    <a class="nav-link" href="/backup.php">💾 Backups</a>
+    <?php endif; ?>
   </div>
   <div class="nav-user">
     <span>Hello, <strong><?= htmlspecialchars($user['username']) ?></strong></span>
@@ -457,6 +463,12 @@ $folder_param = $folder_id ? "?folder=$folder_id" : '';
             <a class="action-btn" href="/download.php?id=<?= $item['id'] ?>" title="Download">⬇</a>
             <?php endif; ?>
             <?php if (is_admin() || $item['owner_id'] == $user['id']): ?>
+            <button class="action-btn" onclick="openRename(<?= $item['id'] ?>, '<?= htmlspecialchars(addslashes($item['filename'])) ?>')" title="Rename">✏️</button>
+            <?php endif; ?>
+            <?php if (is_admin()): ?>
+            <a class="action-btn" href="/permissions.php?file_id=<?= $item['id'] ?>" title="Permissions">🔒</a>
+            <?php endif; ?>
+            <?php if (is_admin() || $item['owner_id'] == $user['id']): ?>
             <a class="action-btn del" href="/delete.php?id=<?= $item['id'] ?><?= $folder_id ? "&folder=$folder_id" : '' ?>"
                onclick="return confirm('Delete <?= htmlspecialchars(addslashes($item['filename'])) ?>?')"
                title="Delete">🗑</a>
@@ -507,9 +519,34 @@ $folder_param = $folder_id ? "?folder=$folder_id" : '';
   </div>
 </div>
 
+<!-- Rename Modal -->
+<div class="modal-backdrop" id="modal-rename">
+  <div class="modal">
+    <h2>Rename</h2>
+    <form method="POST" action="/action_rename.php">
+      <input type="hidden" name="id" id="rename-id">
+      <input type="hidden" name="folder_id" value="<?= $folder_id ?? '' ?>">
+      <div class="field">
+        <label>New Name</label>
+        <input type="text" name="new_name" id="rename-name" required autofocus>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('modal-rename')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Rename</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <script>
 function openModal(id)  { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+function openRename(id, name) {
+  document.getElementById('rename-id').value = id;
+  document.getElementById('rename-name').value = name;
+  openModal('modal-rename');
+}
 
 // Close modal on backdrop click
 document.querySelectorAll('.modal-backdrop').forEach(el => {
