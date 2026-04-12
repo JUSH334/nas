@@ -19,8 +19,13 @@ if (!$file) {
 }
 
 if ($file['owner_id'] != $user['id'] && !is_admin()) {
-    $_SESSION['flash'] = ['type' => 'error', 'msg' => 'Access denied.'];
-    header("Location: $redirect"); exit;
+    $perm = $pdo->prepare('SELECT can_write FROM permissions WHERE file_id = ? AND user_id = ?');
+    $perm->execute([$id, $user['id']]);
+    $p = $perm->fetch();
+    if (!$p || !$p['can_write']) {
+        $_SESSION['flash'] = ['type' => 'error', 'msg' => 'Access denied.'];
+        header("Location: $redirect"); exit;
+    }
 }
 
 if ($new_name === '') {
