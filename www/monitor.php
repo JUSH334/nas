@@ -348,6 +348,129 @@ function file_icon(string $type): string {
   .mini-bar-fill  { height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent2), var(--accent)); }
 
   .empty { padding: 32px 20px; text-align: center; color: var(--muted); font-size: 13px; }
+
+  /* External Storage panel */
+  .ext-storage {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    animation: fadeUp 0.4s ease both;
+    transition: border-color 0.4s ease, box-shadow 0.4s ease;
+  }
+  .ext-storage[data-active="1"] {
+    border-color: rgba(79,255,176,0.3);
+    box-shadow: 0 0 0 1px rgba(79,255,176,0.05);
+  }
+  .ext-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .ext-identity { display: flex; align-items: center; gap: 12px; }
+  .ext-icon {
+    width: 36px; height: 36px;
+    background: rgba(79,255,176,0.08);
+    border: 1px solid rgba(79,255,176,0.2);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--accent);
+    transition: all 0.4s ease;
+  }
+  .ext-storage[data-active="0"] .ext-icon {
+    color: var(--muted);
+    background: var(--surface2);
+    border-color: var(--border);
+  }
+  .ext-title { font-size: 14px; font-weight: 500; }
+  .ext-target {
+    font-size: 11px; color: var(--muted);
+    font-family: 'Space Mono', monospace;
+    margin-top: 2px;
+  }
+  .ext-status { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+  .ext-status-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--muted);
+    transition: background 0.3s ease, box-shadow 0.3s ease;
+  }
+  .ext-storage[data-active="1"] .ext-status-dot {
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent);
+  }
+  .ext-status-dot.writing {
+    animation: pulse-write 0.6s ease-out;
+  }
+  @keyframes pulse-write {
+    0%   { transform: scale(1);   box-shadow: 0 0 8px var(--accent); }
+    50%  { transform: scale(1.6); box-shadow: 0 0 16px var(--accent); }
+    100% { transform: scale(1);   box-shadow: 0 0 8px var(--accent); }
+  }
+  .ext-status-text { color: var(--muted); }
+  .ext-storage[data-active="1"] .ext-status-text { color: var(--accent); }
+
+  .ext-body {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    padding: 20px;
+  }
+  @media (max-width: 700px) { .ext-body { grid-template-columns: 1fr; } }
+
+  .ext-capacity-header {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 10px;
+  }
+  .ext-capacity-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+  .ext-capacity-pct {
+    font-family: 'Space Mono', monospace; font-size: 18px; font-weight: 700;
+    color: var(--accent);
+    transition: color 0.3s ease;
+  }
+  .ext-capacity-pct.warn   { color: var(--warn); }
+  .ext-capacity-pct.danger { color: var(--danger); }
+  .ext-capacity-meta {
+    display: flex; justify-content: space-between;
+    font-size: 12px; color: var(--muted);
+    margin-top: 8px;
+  }
+
+  .ext-props {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 18px;
+    align-content: start;
+  }
+  .ext-prop {
+    display: flex; justify-content: space-between;
+    font-size: 12px;
+    padding: 4px 0;
+    border-bottom: 1px solid rgba(42,45,56,0.4);
+  }
+  .ext-prop-key { color: var(--muted); }
+  .ext-prop-val { font-family: 'Space Mono', monospace; color: var(--text); }
+
+  /* Charts panel — smooth dropdown */
+  .charts-panel {
+    background: var(--surface);
+    border: 1px solid transparent;
+    border-radius: 10px;
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    margin-bottom: 0;
+    transition: max-height 0.35s cubic-bezier(.4,0,.2,1),
+                opacity 0.25s ease,
+                margin-bottom 0.35s cubic-bezier(.4,0,.2,1),
+                border-color 0.25s ease;
+  }
+  .charts-panel.open {
+    max-height: 220px;
+    opacity: 1;
+    margin-bottom: 18px;
+    border-color: var(--border);
+  }
+  .charts-inner { padding: 14px 18px; }
 </style>
 </head>
 <body>
@@ -378,11 +501,41 @@ function file_icon(string $type): string {
   <div class="page-hero">
     <div>
       <h1 class="hero-title">System Health</h1>
-      <p class="hero-sub">Real-time insights into your NAS server, storage volumes, and active sessions.</p>
+      <p class="hero-sub">
+        Real-time insights into your NAS server, storage volumes, and active sessions.
+        <span id="live-dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent);margin-left:8px;vertical-align:middle;box-shadow:0 0 8px var(--accent);" title="Live — updating every 3 seconds"></span>
+        <span style="font-size:11px;color:var(--muted);margin-left:4px;">live</span>
+      </p>
     </div>
     <div class="hero-stat">
-      <span class="hero-stat-value"><?= fmt_uptime($uptime_s) ?></span>
+      <span class="hero-stat-value" data-m="uptime_fmt"><?= fmt_uptime($uptime_s) ?></span>
       <span class="hero-stat-label">Uptime</span>
+    </div>
+  </div>
+
+  <div style="display:flex;justify-content:flex-end;margin-bottom:14px;">
+    <button id="toggle-charts" type="button" style="background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px 14px;border-radius:var(--radius);font-family:'DM Sans',sans-serif;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:6px;transition:border-color 0.15s, color 0.15s;" onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)';" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text)';">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      <span id="toggle-charts-label">Show Charts</span>
+    </button>
+  </div>
+
+  <div id="charts-panel" class="charts-panel">
+    <div class="charts-inner">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;">
+        <div>
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;">CPU %</div>
+          <div style="position:relative;height:60px;"><canvas id="chart-cpu"></canvas></div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;">Memory %</div>
+          <div style="position:relative;height:60px;"><canvas id="chart-mem"></canvas></div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;">Load (1m)</div>
+          <div style="position:relative;height:60px;"><canvas id="chart-load"></canvas></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -392,23 +545,23 @@ function file_icon(string $type): string {
   <div class="stat-grid">
     <div class="stat-card">
       <div class="stat-label">Uptime</div>
-      <div class="stat-value" style="font-size:20px"><?= fmt_uptime($uptime_s) ?></div>
+      <div class="stat-value" style="font-size:20px" data-m="uptime_fmt"><?= fmt_uptime($uptime_s) ?></div>
       <div class="stat-sub">since last server restart</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Load Average</div>
-      <div class="stat-value" style="font-size:18px"><?= $load['1'] ?> · <?= $load['5'] ?> · <?= $load['15'] ?></div>
-      <div class="stat-sub"><?= $cpu_cores ?> cores · 1m / 5m / 15m</div>
+      <div class="stat-value" style="font-size:18px" data-m="load_avg"><?= $load['1'] ?> · <?= $load['5'] ?> · <?= $load['15'] ?></div>
+      <div class="stat-sub"><span data-m="cpu_cores"><?= $cpu_cores ?></span> cores · 1m / 5m / 15m</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Active Sessions</div>
-      <div class="stat-value"><?= $active_count ?></div>
+      <div class="stat-value" data-m="active_count"><?= $active_count ?></div>
       <div class="stat-sub">logged in last 30 min</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Last Auto Backup</div>
-      <div class="stat-value" style="font-size:18px"><?= $last_auto ? fmt_ago($last_auto['created_at']) : 'never' ?></div>
-      <div class="stat-sub"><?= $last_auto ? fmt((int)$last_auto['filesize']) : 'no backups yet' ?></div>
+      <div class="stat-value" style="font-size:18px" data-m="last_auto_ago"><?= $last_auto ? fmt_ago($last_auto['created_at']) : 'never' ?></div>
+      <div class="stat-sub" data-m="last_auto_size"><?= $last_auto ? fmt((int)$last_auto['filesize']) : 'no backups yet' ?></div>
     </div>
   </div>
 
@@ -418,23 +571,23 @@ function file_icon(string $type): string {
   <div class="stat-grid">
     <div class="stat-card">
       <div class="stat-label">Total Users</div>
-      <div class="stat-value"><?= $total_users ?></div>
+      <div class="stat-value" data-m="total_users"><?= $total_users ?></div>
       <div class="stat-sub">registered accounts</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Files Stored</div>
-      <div class="stat-value"><?= $total_files ?></div>
-      <div class="stat-sub"><?= $total_folders ?> folders</div>
+      <div class="stat-value" data-m="total_files"><?= $total_files ?></div>
+      <div class="stat-sub"><span data-m="total_folders"><?= $total_folders ?></span> folders</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Uploads Size</div>
-      <div class="stat-value" style="font-size:20px"><?= fmt($uploads_db) ?></div>
+      <div class="stat-value" style="font-size:20px" data-m="uploads_db_fmt"><?= fmt($uploads_db) ?></div>
       <div class="stat-sub">across all users</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Backups Size</div>
-      <div class="stat-value" style="font-size:20px"><?= fmt($backups_db) ?></div>
-      <div class="stat-sub"><?= $backups_count ?> archives</div>
+      <div class="stat-value" style="font-size:20px" data-m="backups_db_fmt"><?= fmt($backups_db) ?></div>
+      <div class="stat-sub"><span data-m="backups_count"><?= $backups_count ?></span> archives</div>
     </div>
   </div>
 
@@ -449,66 +602,103 @@ function file_icon(string $type): string {
     <div class="gauge-card">
       <div class="gauge-header">
         <span class="gauge-title">Uploads Volume</span>
-        <span class="gauge-pct <?= $up_class ?>"><?= $uploads_pct ?>%</span>
+        <span class="gauge-pct <?= $up_class ?>" data-m="uploads_pct" data-suffix="%"><?= $uploads_pct ?>%</span>
       </div>
-      <div class="bar-track"><div class="bar-fill <?= $up_class ?>" style="width:<?= $uploads_pct ?>%"></div></div>
-      <div class="gauge-meta"><span><?= fmt($uploads_used) ?> used</span><span><?= fmt($uploads_total) ?> total</span></div>
+      <div class="bar-track"><div class="bar-fill <?= $up_class ?>" style="width:<?= $uploads_pct ?>%" data-bar="uploads_pct"></div></div>
+      <div class="gauge-meta"><span><span data-m="uploads_used_fmt"><?= fmt($uploads_used) ?></span> used</span><span><span data-m="uploads_total_fmt"><?= fmt($uploads_total) ?></span> total</span></div>
     </div>
 
     <?php if (!$same_volume): ?>
     <div class="gauge-card">
       <div class="gauge-header">
         <span class="gauge-title">Backups Volume</span>
-        <span class="gauge-pct <?= $bk_class ?>"><?= $backups_pct ?>%</span>
+        <span class="gauge-pct <?= $bk_class ?>" data-m="backups_pct" data-suffix="%"><?= $backups_pct ?>%</span>
       </div>
-      <div class="bar-track"><div class="bar-fill <?= $bk_class ?>" style="width:<?= $backups_pct ?>%"></div></div>
-      <div class="gauge-meta"><span><?= fmt($backups_used) ?> used</span><span><?= fmt($backups_total) ?> total</span></div>
+      <div class="bar-track"><div class="bar-fill <?= $bk_class ?>" style="width:<?= $backups_pct ?>%" data-bar="backups_pct"></div></div>
+      <div class="gauge-meta"><span><span data-m="backups_used_fmt"><?= fmt($backups_used) ?></span> used</span><span><span data-m="backups_total_fmt"><?= fmt($backups_total) ?></span> total</span></div>
     </div>
     <?php endif; ?>
 
     <div class="gauge-card">
       <div class="gauge-header">
         <span class="gauge-title">CPU Usage</span>
-        <span class="gauge-pct <?= $cpu_class ?>"><?= $cpu ?>%</span>
+        <span class="gauge-pct <?= $cpu_class ?>" data-m="cpu" data-suffix="%"><?= $cpu ?>%</span>
       </div>
-      <div class="bar-track"><div class="bar-fill <?= $cpu_class ?>" style="width:<?= $cpu ?>%"></div></div>
-      <div class="gauge-meta"><span>load 1m: <?= $load['1'] ?> (<?= $load1_pct ?>% of <?= $cpu_cores ?>c)</span><span>0–100%</span></div>
+      <div class="bar-track"><div class="bar-fill <?= $cpu_class ?>" style="width:<?= $cpu ?>%" data-bar="cpu"></div></div>
+      <div class="gauge-meta"><span>load 1m: <span data-m="load1"><?= $load['1'] ?></span> (<span data-m="load1_pct"><?= $load1_pct ?></span>% of <span data-m="cpu_cores"><?= $cpu_cores ?></span>c)</span><span>0–100%</span></div>
     </div>
 
     <div class="gauge-card">
       <div class="gauge-header">
         <span class="gauge-title">Memory</span>
-        <span class="gauge-pct <?= $mem_class ?>"><?= $mem['pct'] ?>%</span>
+        <span class="gauge-pct <?= $mem_class ?>" data-m="mem_pct" data-suffix="%"><?= $mem['pct'] ?>%</span>
       </div>
-      <div class="bar-track"><div class="bar-fill <?= $mem_class ?>" style="width:<?= $mem['pct'] ?>%"></div></div>
-      <div class="gauge-meta"><span><?= fmt($mem['used']) ?> used</span><span><?= fmt($mem['total']) ?> total</span></div>
+      <div class="bar-track"><div class="bar-fill <?= $mem_class ?>" style="width:<?= $mem['pct'] ?>%" data-bar="mem_pct"></div></div>
+      <div class="gauge-meta"><span><span data-m="mem_used_fmt"><?= fmt($mem['used']) ?></span> used</span><span><span data-m="mem_total_fmt"><?= fmt($mem['total']) ?></span> total</span></div>
     </div>
   </div>
 
-  <?php if ($same_volume): ?>
-  <p style="font-size:11px;color:var(--muted);margin:-14px 0 22px;font-family:'Space Mono',monospace;">
-    NOTE — uploads and backups are bind-mounted to the same host disk, so they share one volume gauge.
-  </p>
-  <?php endif; ?>
+  <!-- External Storage panel (USB / secondary destinations) -->
+  <div id="ext-storage-panel" class="ext-storage" data-active="0" style="margin-bottom:14px;">
+    <div class="ext-header">
+      <div class="ext-identity">
+        <span class="ext-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/><line x1="6" y1="15" x2="6.01" y2="15"/><line x1="10" y1="15" x2="10.01" y2="15"/></svg>
+        </span>
+        <div>
+          <div class="ext-title">USB Drive</div>
+          <div class="ext-target" data-m="usb_target">—</div>
+        </div>
+      </div>
+      <div class="ext-status">
+        <span class="ext-status-dot" id="ext-status-dot"></span>
+        <span id="ext-status-text" class="ext-status-text">Checking…</span>
+      </div>
+    </div>
+
+    <div class="ext-body">
+      <div class="ext-capacity">
+        <div class="ext-capacity-header">
+          <span class="ext-capacity-label">Capacity</span>
+          <span class="ext-capacity-pct" data-m="usb_capacity_pct">—</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill" data-bar="usb_pct" style="width:0%"></div></div>
+        <div class="ext-capacity-meta">
+          <span><span data-m="usb_used_fmt">—</span> used</span>
+          <span><span data-m="usb_total_fmt">—</span> total</span>
+        </div>
+      </div>
+
+      <div class="ext-props">
+        <div class="ext-prop"><span class="ext-prop-key">Role</span><span class="ext-prop-val">Backup mirror</span></div>
+        <div class="ext-prop"><span class="ext-prop-key">Files mirrored</span><span class="ext-prop-val" data-m="usb_count">—</span></div>
+        <div class="ext-prop"><span class="ext-prop-key">Last sync</span><span class="ext-prop-val" data-m="usb_last_sync">—</span></div>
+        <div class="ext-prop"><span class="ext-prop-key">Last write</span><span class="ext-prop-val" data-m="usb_last_write">—</span></div>
+        <div class="ext-prop"><span class="ext-prop-key">Sync interval</span><span class="ext-prop-val"><span data-m="usb_poll_s">—</span>s</span></div>
+      </div>
+    </div>
+  </div>
 
   <!-- Active sessions panel -->
   <div class="panel" style="margin-bottom:14px;">
     <div class="panel-header">Active Sessions <span style="color:var(--muted);font-weight:400;margin-left:6px;">(last 30 min)</span></div>
-    <?php if ($active_count === 0): ?>
-      <div class="empty">No recent logins.</div>
-    <?php else: ?>
-      <ul class="upload-list">
-        <?php foreach ($active_users as $au): ?>
-        <li class="upload-item">
-          <span class="upload-icon" style="<?= $au['role']==='admin' ? 'color:#00bfff;background:rgba(0,191,255,0.08);border-color:rgba(0,191,255,0.25);' : '' ?>">
-            <?= $au['role'] === 'admin' ? 'ADM' : 'USR' ?>
-          </span>
-          <span class="upload-name"><?= htmlspecialchars($au['username']) ?></span>
-          <span class="upload-meta"><?= fmt_ago($au['last_login']) ?></span>
-        </li>
-        <?php endforeach; ?>
-      </ul>
-    <?php endif; ?>
+    <div id="active-sessions-body">
+      <?php if ($active_count === 0): ?>
+        <div class="empty">No recent logins.</div>
+      <?php else: ?>
+        <ul class="upload-list">
+          <?php foreach ($active_users as $au): ?>
+          <li class="upload-item">
+            <span class="upload-icon" style="<?= $au['role']==='admin' ? 'color:#00bfff;background:rgba(0,191,255,0.08);border-color:rgba(0,191,255,0.25);' : '' ?>">
+              <?= $au['role'] === 'admin' ? 'ADM' : 'USR' ?>
+            </span>
+            <span class="upload-name"><?= htmlspecialchars($au['username']) ?></span>
+            <span class="upload-meta"><?= fmt_ago($au['last_login']) ?></span>
+          </li>
+          <?php endforeach; ?>
+        </ul>
+      <?php endif; ?>
+    </div>
   </div>
 
   <!-- Bottom panels -->
@@ -567,12 +757,8 @@ function file_icon(string $type): string {
           <div class="mini-bar-track">
             <div class="mini-bar-fill" style="width:<?= $pct ?>%<?= $color ? ";background:$color" : '' ?>"></div>
           </div>
-          <?php } else {
-            $bar_pct = $max > 0 ? round(($u['used']/$max)*100) : 0;
-          ?>
-          <div class="mini-bar-track">
-            <div class="mini-bar-fill" style="width:<?= $bar_pct ?>%"></div>
-          </div>
+          <?php } else { ?>
+          <div style="font-size:10px;color:var(--muted);font-family:'Space Mono',monospace;">no quota set · unlimited</div>
           <?php } ?>
         </li>
         <?php endforeach; ?>
@@ -582,6 +768,204 @@ function file_icon(string $type): string {
 
   </div>
 </main>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+(function() {
+  const POLL_MS = 3000;
+  const HISTORY = 60;     // ~3 min at 3s
+  const history = { cpu: [], mem: [], load: [], labels: [] };
+  let charts = null;
+
+  function pulse(el) {
+    if (!el) return;
+    el.style.transition = 'color 0.3s';
+    const orig = el.style.color;
+    el.style.color = 'var(--accent)';
+    setTimeout(() => { el.style.color = orig; }, 300);
+  }
+
+  function classFor(pct, thresholds) {
+    if (pct >= thresholds.danger) return 'danger';
+    if (pct >= thresholds.warn)   return 'warn';
+    return 'ok';
+  }
+
+  function applyClass(el, cls) {
+    if (!el) return;
+    el.classList.remove('ok', 'warn', 'danger');
+    el.classList.add(cls);
+  }
+
+  async function poll() {
+    let data;
+    try {
+      const r = await fetch('/monitor_data.php', { credentials: 'same-origin' });
+      if (!r.ok) throw new Error(r.status);
+      data = await r.json();
+    } catch (e) {
+      // Silently skip — try again next tick. Live dot dims.
+      const dot = document.getElementById('live-dot');
+      if (dot) dot.style.background = 'var(--muted)';
+      return;
+    }
+    const dot = document.getElementById('live-dot');
+    if (dot) dot.style.background = 'var(--accent)';
+
+    // Update every [data-m] element. Special keys handled separately below.
+    const usb = data.usb || {};
+    const composite = {
+      load_avg: `${data.load1} · ${data.load5} · ${data.load15}`,
+      last_auto_ago:  data.last_auto ? data.last_auto.ago  : 'never',
+      last_auto_size: data.last_auto ? data.last_auto.size : 'no backups yet',
+      usb_target:        usb.target || 'No external storage detected',
+      usb_capacity_pct:  usb.total_bytes > 0 ? `${usb.pct}%` : '—',
+      usb_used_fmt:      usb.used_fmt || '—',
+      usb_total_fmt:     usb.total_fmt || '—',
+      usb_count:         usb.count != null ? usb.count : '—',
+      usb_last_sync:     usb.last_sync_ago || 'never',
+      usb_last_write:    usb.last_write_ago || 'idle',
+      usb_poll_s:        usb.poll_s || 3,
+    };
+    document.querySelectorAll('[data-m]').forEach(el => {
+      const key = el.dataset.m;
+      let val;
+      if (key in composite) val = composite[key];
+      else if (key in data) val = data[key];
+      else return;
+      const suffix = el.dataset.suffix || '';
+      const next = String(val) + suffix;
+      if (el.textContent !== next) {
+        el.textContent = next;
+        pulse(el);
+      }
+    });
+
+    // Bar widths + colour classes
+    const updateBar = (selector, pct, thresholds) => {
+      const fill = document.querySelector(`[data-bar="${selector}"]`);
+      const pctEl = document.querySelector(`[data-m="${selector}"]`);
+      if (fill) fill.style.width = pct + '%';
+      const cls = classFor(pct, thresholds);
+      applyClass(fill, cls);
+      applyClass(pctEl, cls);
+    };
+    updateBar('cpu',          data.cpu,          { warn: 60, danger: 80 });
+    updateBar('mem_pct',      data.mem_pct,      { warn: 65, danger: 85 });
+    updateBar('uploads_pct',  data.uploads_pct,  { warn: 65, danger: 85 });
+    updateBar('backups_pct',  data.backups_pct,  { warn: 65, danger: 85 });
+    if (usb.total_bytes > 0) {
+      updateBar('usb_pct', usb.pct, { warn: 70, danger: 90 });
+    }
+
+    // External Storage panel — connection state + write pulse
+    const extPanel  = document.getElementById('ext-storage-panel');
+    const extStatus = document.getElementById('ext-status-text');
+    const extDot    = document.getElementById('ext-status-dot');
+    if (extPanel) {
+      const wasActive = extPanel.dataset.active === '1';
+      const isActive  = !!usb.active;
+      extPanel.dataset.active = isActive ? '1' : '0';
+      if (extStatus) {
+        if (isActive)            extStatus.textContent = 'Connected';
+        else if (usb.target)     extStatus.textContent = 'Disconnected';
+        else                     extStatus.textContent = 'Not configured';
+      }
+      // Pulse the status dot when a write just happened
+      if (isActive && usb.recently_active && extDot) {
+        extDot.classList.remove('writing');
+        void extDot.offsetWidth; // restart animation
+        extDot.classList.add('writing');
+      }
+    }
+    // Capacity colour mirrors warn/danger thresholds
+    const usbPctEl = document.querySelector('[data-m="usb_capacity_pct"]');
+    if (usbPctEl) {
+      usbPctEl.classList.remove('warn', 'danger');
+      if (usb.pct >= 90)      usbPctEl.classList.add('danger');
+      else if (usb.pct >= 70) usbPctEl.classList.add('warn');
+    }
+
+    // Active sessions list
+    const body = document.getElementById('active-sessions-body');
+    if (body) {
+      if (data.active_count === 0) {
+        body.innerHTML = '<div class="empty">No recent logins.</div>';
+      } else {
+        body.innerHTML = '<ul class="upload-list">' + data.active_users.map(u => {
+          const isAdmin = u.role === 'admin';
+          const style = isAdmin ? 'color:#00bfff;background:rgba(0,191,255,0.08);border-color:rgba(0,191,255,0.25);' : '';
+          const tag = isAdmin ? 'ADM' : 'USR';
+          const name = u.username.replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]);
+          return `<li class="upload-item"><span class="upload-icon" style="${style}">${tag}</span><span class="upload-name">${name}</span><span class="upload-meta">${u.ago}</span></li>`;
+        }).join('') + '</ul>';
+      }
+    }
+
+    // Push to history buffers
+    const t = new Date(data.ts * 1000);
+    const label = t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    history.labels.push(label);
+    history.cpu.push(data.cpu);
+    history.mem.push(data.mem_pct);
+    history.load.push(parseFloat(data.load1));
+    if (history.labels.length > HISTORY) {
+      history.labels.shift(); history.cpu.shift(); history.mem.shift(); history.load.shift();
+    }
+    if (charts) {
+      charts.cpu.data.labels = history.labels;  charts.cpu.data.datasets[0].data  = history.cpu;  charts.cpu.update('none');
+      charts.mem.data.labels = history.labels;  charts.mem.data.datasets[0].data  = history.mem;  charts.mem.update('none');
+      charts.load.data.labels = history.labels; charts.load.data.datasets[0].data = history.load; charts.load.update('none');
+    }
+  }
+
+  function makeChart(canvasId, color, max) {
+    return new Chart(document.getElementById(canvasId), {
+      type: 'line',
+      data: { labels: history.labels.slice(), datasets: [{
+        data: history.cpu.slice(), borderColor: color, backgroundColor: color + '22',
+        fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2,
+      }]},
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false, displayColors: false } },
+        scales: {
+          x: { display: false },
+          y: { beginAtZero: true, max: max, display: false, grid: { display: false } }
+        },
+        elements: { line: { borderWidth: 1.5 } }
+      }
+    });
+  }
+
+  document.getElementById('toggle-charts').addEventListener('click', () => {
+    const panel = document.getElementById('charts-panel');
+    const label = document.getElementById('toggle-charts-label');
+    const opening = !panel.classList.contains('open');
+    panel.classList.toggle('open');
+    label.textContent = opening ? 'Hide Charts' : 'Show Charts';
+    if (opening && !charts) {
+      // Wait for the slide-down to finish before initializing charts so they
+      // measure their parent's full height instead of 0.
+      setTimeout(() => {
+        charts = {
+          cpu:  makeChart('chart-cpu',  '#4fffb0', 100),
+          mem:  makeChart('chart-mem',  '#00bfff', 100),
+          load: makeChart('chart-load', '#ffb84f', null),
+        };
+        charts.mem.data.datasets[0].data  = history.mem;
+        charts.load.data.datasets[0].data = history.load;
+      }, 360);
+    } else if (opening && charts) {
+      // Already initialized — just trigger a resize after the panel reopens.
+      setTimeout(() => { charts.cpu.resize(); charts.mem.resize(); charts.load.resize(); }, 360);
+    }
+  });
+
+  poll();
+  setInterval(poll, POLL_MS);
+})();
+</script>
 
 </body>
 </html>

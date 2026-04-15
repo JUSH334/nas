@@ -11,7 +11,9 @@ services:
     volumes:
       - ./www:/var/www/html
       - ./uploads:/var/www/uploads
-      # Bind-mount backups to external folder so they survive container rebuilds
+      # Bind-mount backups to external folder so they survive container rebuilds.
+      # USB / secondary mirroring is handled by a host-side scheduled task
+      # (see scripts/mirror_to_usb.ps1) — Docker isn't involved.
       - ./external_backups:/var/www/backups
     depends_on:
       - db

@@ -5,6 +5,28 @@ require_once 'db.php';
 
 $user = current_user();
 
+// ── USB sync status (read-only — actual sync runs host-side) ────
+// The host scheduled task (scripts/mirror_to_usb.ps1) writes a heartbeat
+// file in /var/www/backups after each successful USB mirror. We read it
+// to know whether the USB is currently being mirrored.
+function usb_sync_status(): array {
+    $heartbeat = '/var/www/backups/.usb_sync_status';
+    if (!file_exists($heartbeat)) return ['active' => false, 'last' => null, 'count' => 0];
+    $age = time() - filemtime($heartbeat);
+    $data = @json_decode(@file_get_contents($heartbeat), true) ?: [];
+    return [
+        'active' => $age < 900,           // heartbeat fresh within 15 minutes
+        'age_s'  => $age,
+        'last'   => $data['last_sync'] ?? null,
+        'count'  => (int)($data['files_mirrored'] ?? 0),
+        'target' => $data['target_path']  ?? '',
+    ];
+}
+
+function usb_destination_active(): bool {
+    return usb_sync_status()['active'];
+}
+
 // ── Handle actions ──────────────────────────────────────
 $message = '';
 $error   = '';
@@ -57,7 +79,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'creat
         $stmt->execute(["{$backup_name}.zip", $zip_file, $size, $user['id']]);
         $message = "Backup created successfully: {$backup_name}.zip";
 
-        // Log to backup log
+        // Log to backup log (USB mirror happens out-of-band via scheduled task)
         $log_entry = date('Y-m-d H:i:s') . " OK: Manual backup created by {$user['username']}: {$backup_name}.zip (" . round($size / 1024) . " KB)\n";
         file_put_contents('/var/log/backup_cron.log', $log_entry, FILE_APPEND);
     } else {
@@ -490,10 +512,16 @@ function fmt_size($bytes): string {
 </nav>
 
 <main>
+  <?php $usb = usb_sync_status(); ?>
   <div class="page-hero">
     <div>
       <h1 class="hero-title">Data Protection</h1>
-      <p class="hero-sub">Your files are safe. Create manual backups or schedule them automatically.</p>
+      <p class="hero-sub">
+        Your files are safe. Create manual backups or schedule them automatically.
+        <span id="usb-badge" style="display:inline-block;margin-left:10px;padding:3px 8px;border-radius:99px;font-size:11px;font-family:'Space Mono',monospace;vertical-align:middle;<?= $usb['active'] ? 'background:rgba(79,255,176,0.1);border:1px solid rgba(79,255,176,0.3);color:var(--accent);' : 'background:var(--surface2);border:1px solid var(--border);color:var(--muted);' ?>">
+          <span id="usb-dot" style="display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:5px;vertical-align:middle;<?= $usb['active'] ? 'background:var(--accent);box-shadow:0 0 6px var(--accent);' : 'background:var(--muted);' ?>"></span><span id="usb-text"><?= $usb['active'] ? 'USB mirror active · ' . $usb['count'] . ' file(s)' : 'USB mirror inactive' ?></span>
+        </span>
+      </p>
     </div>
     <div class="hero-stat">
       <span class="hero-stat-value"><?= count($backups) ?></span>
@@ -751,7 +779,7 @@ function fmt_size($bytes): string {
 
   <!-- Backup list -->
   <div class="panel">
-    <div class="panel-header">Saved Backups (<?= count($backups) ?>)</div>
+    <div class="panel-header">Saved Backups (<span id="backup-count"><?= count($backups) ?></span>)</div>
     <?php if (empty($backups)): ?>
       <div class="empty">No backups yet. Create one above.</div>
     <?php else: ?>
@@ -793,6 +821,59 @@ function fmt_size($bytes): string {
     <?php endif; ?>
   </div>
 </main>
+
+<script>
+(function() {
+  const POLL_MS = 5000;
+  let lastCount = parseInt(document.getElementById('backup-count').textContent, 10) || 0;
+
+  function setUsbBadge(usb) {
+    const badge = document.getElementById('usb-badge');
+    const dot   = document.getElementById('usb-dot');
+    const text  = document.getElementById('usb-text');
+    if (!badge || !dot || !text) return;
+    if (usb.active) {
+      badge.style.background   = 'rgba(79,255,176,0.1)';
+      badge.style.border       = '1px solid rgba(79,255,176,0.3)';
+      badge.style.color        = 'var(--accent)';
+      dot.style.background     = 'var(--accent)';
+      dot.style.boxShadow      = '0 0 6px var(--accent)';
+      text.textContent         = `USB mirror active · ${usb.count} file(s)`;
+    } else {
+      badge.style.background   = 'var(--surface2)';
+      badge.style.border       = '1px solid var(--border)';
+      badge.style.color        = 'var(--muted)';
+      dot.style.background     = 'var(--muted)';
+      dot.style.boxShadow      = 'none';
+      text.textContent         = 'USB mirror inactive';
+    }
+  }
+
+  async function poll() {
+    let data;
+    try {
+      const r = await fetch('/backup_data.php', { credentials: 'same-origin' });
+      if (!r.ok) return;
+      data = await r.json();
+    } catch (e) { return; }
+
+    setUsbBadge(data.usb || { active: false, count: 0 });
+
+    const countEl = document.getElementById('backup-count');
+    if (countEl) countEl.textContent = data.count;
+
+    // If a new backup appeared (e.g. cron just ran), reload the page so the
+    // list, action buttons, and IDs all stay consistent with the server view.
+    if (data.count !== lastCount) {
+      lastCount = data.count;
+      setTimeout(() => location.reload(), 400);
+    }
+  }
+
+  setInterval(poll, POLL_MS);
+  poll();
+})();
+</script>
 
 </body>
 </html>
