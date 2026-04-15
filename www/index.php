@@ -206,7 +206,7 @@ $storage_quota = $quota_stmt->fetchColumn();
 
   /* ── Top nav ── */
   nav {
-    background: var(--surface);
+    background-color: #161920;
     border-bottom: 1px solid var(--border);
     padding: 0 28px;
     height: 56px;
@@ -216,6 +216,7 @@ $storage_quota = $quota_stmt->fetchColumn();
     position: sticky;
     top: 0;
     z-index: 100;
+    box-shadow: 0 1px 0 rgba(0,0,0,0.4), 0 4px 12px rgba(0,0,0,0.25);
   }
 
   .nav-logo {
@@ -537,8 +538,8 @@ $storage_quota = $quota_stmt->fetchColumn();
 
   /* Admin nav distinction - subtle blue accent line */
   body.admin-mode nav {
-    background:
-      linear-gradient(to bottom, rgba(0,191,255,0.04) 0%, var(--surface) 100%);
+    background-image:
+      linear-gradient(to bottom, rgba(0,191,255,0.04) 0%, rgba(0,191,255,0) 100%);
   }
   body.admin-mode nav::after {
     content: '';

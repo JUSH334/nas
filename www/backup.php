@@ -324,9 +324,10 @@ function fmt_size($bytes): string {
   body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; min-height: 100vh; display: flex; flex-direction: column; }
 
   nav {
-    background: var(--surface); border-bottom: 1px solid var(--border);
+    background-color: #161920; border-bottom: 1px solid var(--border);
     padding: 0 28px; height: 56px; display: flex; align-items: center; gap: 20px;
     position: sticky; top: 0; z-index: 100;
+    box-shadow: 0 1px 0 rgba(0,0,0,0.4), 0 4px 12px rgba(0,0,0,0.25);
   }
   .nav-logo { font-family: 'Space Mono', monospace; font-weight: 700; font-size: 16px; color: var(--accent); text-decoration: none; margin-right: 8px; }
   .nav-links { display: flex; gap: 4px; flex: 1; }
