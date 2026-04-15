@@ -279,7 +279,6 @@ function fmt_bytes(int $b): string {
                 <?= htmlspecialchars($u['username']) ?>
                 <?php if ($is_self): ?><span class="you-tag">you</span><?php endif; ?>
               </div>
-              <div class="user-email"><?= htmlspecialchars($u['email'] ?? '—') ?></div>
             </div>
           </div>
         </td>
@@ -312,7 +311,7 @@ function fmt_bytes(int $b): string {
         <td class="meta"><?= $u['last_login'] ? date('M j, Y g:i a', strtotime($u['last_login'])) : 'Never' ?></td>
         <td>
           <div class="actions">
-            <button class="action-btn" onclick='openEdit(<?= json_encode(['id'=>$u['id'],'username'=>$u['username'],'email'=>$u['email'],'role'=>$u['role'],'storage_quota'=>$u['storage_quota']]) ?>)' title="Edit">
+            <button class="action-btn" onclick='openEdit(<?= json_encode(['id'=>$u['id'],'username'=>$u['username'],'role'=>$u['role'],'storage_quota'=>$u['storage_quota']]) ?>)' title="Edit">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
             </button>
             <?php if ($u['id'] != $user['id']): ?>
@@ -339,10 +338,6 @@ function fmt_bytes(int $b): string {
       <div class="field">
         <label>Username</label>
         <input type="text" name="username" required autofocus>
-      </div>
-      <div class="field">
-        <label>Email <span style="font-size:10px;opacity:.5">(optional)</span></label>
-        <input type="email" name="email">
       </div>
       <div class="field">
         <label>Password</label>
@@ -377,10 +372,6 @@ function fmt_bytes(int $b): string {
       <div class="field">
         <label>Username</label>
         <input type="text" name="username" id="edit-username" required>
-      </div>
-      <div class="field">
-        <label>Email</label>
-        <input type="email" name="email" id="edit-email">
       </div>
       <div class="field">
         <label>New Password <span style="font-size:10px;opacity:.5">(leave blank to keep current)</span></label>
@@ -419,8 +410,7 @@ function filterUsers() {
   let visible = 0;
   rows.forEach(row => {
     const name  = (row.querySelector('.user-name')?.textContent || '').toLowerCase();
-    const email = (row.querySelector('.user-email')?.textContent || '').toLowerCase();
-    const match = q === '' || name.includes(q) || email.includes(q);
+    const match = q === '' || name.includes(q);
     row.style.display = match ? '' : 'none';
     if (match) visible++;
   });
@@ -430,7 +420,6 @@ function filterUsers() {
 function openEdit(u) {
   document.getElementById('edit-id').value       = u.id;
   document.getElementById('edit-username').value = u.username;
-  document.getElementById('edit-email').value    = u.email || '';
   document.getElementById('edit-role').value     = u.role;
   const qMb = u.storage_quota ? Math.round(u.storage_quota / 1048576) : '';
   document.getElementById('edit-quota').value    = qMb;
