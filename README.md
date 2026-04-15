@@ -66,7 +66,6 @@ Visit **http://localhost:8080** and log in with the seeded admin account:
 |----------|----------|
 | `admin`  | `admin123` |
 
-> ⚠️ **Change this password immediately** via the profile page (top-right "Hello, admin").
 
 ---
 
