@@ -3,6 +3,7 @@
 require_once 'auth.php';
 require_admin();
 require_once 'db.php';
+require_once 'usb_manifest.php';
 
 $current = current_user();
 $id      = (int)($_GET['id'] ?? 0);
@@ -35,6 +36,11 @@ if (is_dir($dir)) @rmdir($dir);
 
 // DB cascade handles files + permissions rows
 $pdo->prepare('DELETE FROM users WHERE id = ?')->execute([$id]);
+
+// Refresh manifest so watcher stops syncing this user's folder on next tick.
+// The USB folder itself (D:\nas-users\u_<hash>\) is retained as a forensic
+// archive - append-only principle applies at the user level too.
+update_user_manifest($pdo);
 
 $_SESSION['flash'] = ['type' => 'success', 'msg' => "User \"{$target['username']}\" deleted."];
 header('Location: /users.php');

@@ -3,6 +3,7 @@
 require_once 'auth.php';
 require_admin();
 require_once 'db.php';
+require_once 'usb_manifest.php';
 
 $username = trim($_POST['username'] ?? '');
 $email    = trim($_POST['email']    ?? '') ?: null;
@@ -29,6 +30,10 @@ if ($stmt->fetch()) {
 $hash = password_hash($password, PASSWORD_BCRYPT);
 $pdo->prepare('INSERT INTO users (username, email, password, role, storage_quota) VALUES (?, ?, ?, ?, ?)')
     ->execute([$username, $email, $hash, $role, $quota]);
+
+// Add the new user to the USB manifest so the watcher starts mirroring their
+// uploads the moment they create a file.
+update_user_manifest($pdo);
 
 $_SESSION['flash'] = ['type' => 'success', 'msg' => "User \"$username\" created."];
 header('Location: /users.php');

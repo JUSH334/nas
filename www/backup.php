@@ -2,8 +2,12 @@
 require_once 'auth.php';
 require_admin();
 require_once 'db.php';
+require_once 'usb_manifest.php';
 
 $user = current_user();
+
+// Keep the user manifest fresh so the USB watcher can mirror per-user folders.
+update_user_manifest($pdo);
 
 // ── USB sync status (read-only — actual sync runs host-side) ────
 // The host scheduled task (scripts/mirror_to_usb.ps1) writes a heartbeat

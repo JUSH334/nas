@@ -2,8 +2,12 @@
 require_once 'auth.php';
 require_admin();
 require_once 'db.php';
+require_once 'usb_manifest.php';
 
 $user = current_user();
+
+// Keep the user manifest fresh so the USB watcher can mirror per-user folders.
+update_user_manifest($pdo);
 
 function fmt($bytes): string {
     if ($bytes >= 1073741824) return round($bytes / 1073741824, 2) . ' GB';
@@ -670,8 +674,11 @@ function file_icon(string $type): string {
       </div>
 
       <div class="ext-props">
-        <div class="ext-prop"><span class="ext-prop-key">Role</span><span class="ext-prop-val">Backup archive (append-only)</span></div>
-        <div class="ext-prop"><span class="ext-prop-key">Files mirrored</span><span class="ext-prop-val" data-m="usb_count">—</span></div>
+        <div class="ext-prop"><span class="ext-prop-key">Role</span><span class="ext-prop-val">Backup + per-user archive</span></div>
+        <div class="ext-prop"><span class="ext-prop-key">Backups mirrored</span><span class="ext-prop-val" data-m="usb_count">—</span></div>
+        <div class="ext-prop"><span class="ext-prop-key">User archives</span><span class="ext-prop-val"><span data-m="usb_users_archived">—</span> users · <span data-m="usb_user_files">—</span> files</span></div>
+        <div class="ext-prop"><span class="ext-prop-key">User data size</span><span class="ext-prop-val" data-m="usb_user_bytes">—</span></div>
+        <div class="ext-prop"><span class="ext-prop-key">Orphaned archives</span><span class="ext-prop-val" data-m="usb_orphans">—</span></div>
         <div class="ext-prop"><span class="ext-prop-key">Last sync</span><span class="ext-prop-val" data-m="usb_last_sync">—</span></div>
         <div class="ext-prop"><span class="ext-prop-key">Last write</span><span class="ext-prop-val" data-m="usb_last_write">—</span></div>
         <div class="ext-prop"><span class="ext-prop-key">Sync interval</span><span class="ext-prop-val"><span data-m="usb_poll_s">—</span>s</span></div>
@@ -826,6 +833,12 @@ function file_icon(string $type): string {
       usb_last_sync:     usb.last_sync_ago || 'never',
       usb_last_write:    usb.last_write_ago || 'idle',
       usb_poll_s:        usb.poll_s || 3,
+      usb_users_archived: usb.users_archived != null ? usb.users_archived : '—',
+      usb_user_files:     usb.user_files_mirrored != null ? usb.user_files_mirrored : '—',
+      usb_user_bytes:     usb.user_bytes_fmt || '—',
+      usb_orphans:        usb.orphan_users > 0
+                            ? `${usb.orphan_users} user(s) · ${usb.orphan_user_files} file(s) · ${usb.orphan_bytes_fmt}`
+                            : 'none',
     };
     document.querySelectorAll('[data-m]').forEach(el => {
       const key = el.dataset.m;

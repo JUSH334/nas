@@ -3,6 +3,7 @@
 require_once 'auth.php';
 require_admin();
 require_once 'db.php';
+require_once 'usb_manifest.php';
 
 $id       = (int)($_POST['id'] ?? 0);
 $username = trim($_POST['username'] ?? '');
@@ -39,6 +40,10 @@ if ($password !== '') {
     $pdo->prepare('UPDATE users SET username=?, email=?, role=?, storage_quota=? WHERE id=?')
         ->execute([$username, $email, $role, $quota, $id]);
 }
+
+// Refresh manifest so username changes flow through to the UI side of the
+// USB archive display. (Hash stays stable - it's keyed by user_id + salt.)
+update_user_manifest($pdo);
 
 $_SESSION['flash'] = ['type' => 'success', 'msg' => "User \"$username\" updated."];
 header('Location: /users.php');

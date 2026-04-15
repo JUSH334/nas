@@ -2,8 +2,24 @@
 require_once 'auth.php';
 require_admin();
 require_once 'db.php';
+require_once 'usb_manifest.php';
 
 $user = current_user();
+
+// Keep the USB manifest fresh (adds hashes for newly-created users).
+$manifest = update_user_manifest($pdo);
+
+// USB active dot = the host-side watcher is currently mirroring. Individual
+// users show a green dot only if the overall mirror is active AND they've
+// actually uploaded at least one file (otherwise their folder wouldn't
+// exist on the USB yet).
+$usb_sync_active = false;
+$heartbeat = '/var/www/backups/.usb_sync_status';
+if (file_exists($heartbeat)) {
+    $age = time() - filemtime($heartbeat);
+    $h   = @json_decode(@file_get_contents($heartbeat), true) ?: [];
+    $usb_sync_active = $age < 15 && ($h['status'] ?? '') === 'ok';
+}
 
 // Fetch all users with their storage usage
 // Sort: current user first, then admins, then users alphabetically
@@ -185,6 +201,40 @@ function fmt_bytes(int $b): string {
 
   .meta { color: var(--muted); font-size: 12px; }
 
+  /* USB Archive ID cell - matches the role-badge / Space-Mono code aesthetic */
+  .archive-id {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    user-select: all;
+  }
+  .archive-id:hover {
+    border-color: rgba(79,255,176,0.3);
+    background: var(--surface2);
+  }
+  .archive-id.copied {
+    border-color: var(--accent);
+    background: rgba(79,255,176,0.08);
+  }
+  .archive-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--muted);
+    flex-shrink: 0;
+    transition: background 0.2s, box-shadow 0.2s;
+  }
+  .archive-dot.on  { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+  .archive-dot.off { background: var(--muted); }
+  .archive-hash {
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    color: var(--text);
+    letter-spacing: 0.02em;
+  }
+
   .actions { display: flex; gap: 4px; }
   .action-btn { background: none; border: 1px solid transparent; color: var(--muted); cursor: pointer; padding: 6px; border-radius: var(--radius); text-decoration: none; display: inline-flex; align-items: center; justify-content: center; transition: all 0.12s; }
   .action-btn:hover { background: var(--surface2); color: var(--accent); border-color: var(--border); }
@@ -261,6 +311,7 @@ function fmt_bytes(int $b): string {
         <th>User</th>
         <th>Role</th>
         <th>Storage</th>
+        <th title="Folder name on the backup USB drive. Hashed so the drive doesn't reveal usernames. Click to copy.">USB Archive</th>
         <th>Joined</th>
         <th>Last Login</th>
         <th></th>
@@ -306,6 +357,19 @@ function fmt_bytes(int $b): string {
           <?php } else { ?>
             <span class="meta"><?= fmt_bytes($used) ?> <span style="color:var(--muted);font-size:11px">used · unlimited</span></span>
           <?php } ?>
+        </td>
+        <td>
+          <?php
+            $hash   = $manifest['users'][(string)$u['id']]['hash'] ?? '—';
+            $dot_on = $usb_sync_active && $used > 0;
+            $dot_title = $usb_sync_active
+              ? ($used > 0 ? 'Files mirrored to USB' : 'Ready — user has no uploads yet')
+              : 'USB drive not connected';
+          ?>
+          <div class="archive-id" title="Click to copy" data-hash="<?= htmlspecialchars($hash) ?>">
+            <span class="archive-dot <?= $dot_on ? 'on' : 'off' ?>" title="<?= htmlspecialchars($dot_title) ?>"></span>
+            <code class="archive-hash"><?= htmlspecialchars($hash) ?></code>
+          </div>
         </td>
         <td class="meta"><?= date('M j, Y', strtotime($u['created_at'])) ?></td>
         <td class="meta"><?= $u['last_login'] ? date('M j, Y g:i a', strtotime($u['last_login'])) : 'Never' ?></td>
@@ -425,6 +489,19 @@ function openEdit(u) {
   document.getElementById('edit-quota').value    = qMb;
   openModal('modal-edit');
 }
+
+// Click to copy USB Archive hash to clipboard with a brief "copied" flash
+document.querySelectorAll('.archive-id').forEach(el => {
+  el.addEventListener('click', async () => {
+    const hash = el.dataset.hash;
+    if (!hash || hash === '—') return;
+    try {
+      await navigator.clipboard.writeText(hash);
+      el.classList.add('copied');
+      setTimeout(() => el.classList.remove('copied'), 700);
+    } catch (e) { /* clipboard blocked - user can still select the text manually */ }
+  });
+});
 </script>
 </body>
 </html>

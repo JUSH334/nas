@@ -47,6 +47,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo->prepare('INSERT INTO users (username, password, role) VALUES (?, ?, ?)')
                 ->execute([$username, $hash, 'user']);
 
+            // Add the new self-registered user to the USB manifest so the watcher
+            // picks them up on its next 3-second tick.
+            require_once 'usb_manifest.php';
+            update_user_manifest($pdo);
+
             $success = "Account created successfully! You can now sign in.";
         }
     }

@@ -136,6 +136,17 @@ That's it. The script registers a hidden Windows scheduled task that starts at u
 .\scripts\uninstall_usb_sync.ps1
 ```
 
+### What gets mirrored
+Two things, continuously (append-only, never deletes):
+
+1. **`D:\nas-backups\`** — every backup ZIP as soon as it's created
+2. **`D:\nas-users\u_<hash>\`** — every user's uploaded files, one folder per user, named by a hash of the user ID so physical theft of the drive doesn't reveal who owns what. The hash → username mapping lives only on the NAS host (in `external_backups/.user_manifest.json`), never on the USB.
+
+### Physical security recommendation
+For a production deployment, **turn on BitLocker** on the USB drive — right-click the drive in File Explorer → *"Turn on BitLocker"* → set a passphrase. The entire drive becomes AES-256 encrypted at the block level. Combined with the hashed user folder names, this means:
+- **Drive lost or stolen** → raw bytes unreadable without the passphrase
+- **Drive found plugged in** → folders are anonymous, no way to tell who owns what
+
 ### Notes
 - **File system:** if your USB is formatted as **FAT32**, large backups (>4 GB) will fail to copy. Reformat the drive as **exFAT** or **NTFS** before use (right-click drive in File Explorer → Format).
 - **Drive letter changes:** Windows usually keeps the same letter for the same physical port. If it shifts, just re-edit `mirror_watcher.ps1` and re-run `install_usb_sync.ps1`.

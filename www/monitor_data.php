@@ -154,6 +154,15 @@ if (file_exists($heartbeat)) {
         'last_write_ago' => $lw_unix > 0 ? fmt_ago_unix($lw_unix) : 'idle',
         'recently_active'=> $lw_unix > 0 && abs(time() - $lw_unix) < 5,
         'poll_s'         => (int)($h['poll_interval_s'] ?? 3),
+        'users_target'         => $h['users_target']        ?? '',
+        'users_archived'       => (int)($h['users_archived']       ?? 0),
+        'user_files_mirrored'  => (int)($h['user_files_mirrored']  ?? 0),
+        'user_bytes_mirrored'  => (int)($h['user_bytes_mirrored']  ?? 0),
+        'user_bytes_fmt'       => fmt((int)($h['user_bytes_mirrored'] ?? 0)),
+        'orphan_users'         => (int)($h['orphan_users']        ?? 0),
+        'orphan_user_files'    => (int)($h['orphan_user_files']   ?? 0),
+        'orphan_user_bytes'    => (int)($h['orphan_user_bytes']   ?? 0),
+        'orphan_bytes_fmt'     => fmt((int)($h['orphan_user_bytes'] ?? 0)),
     ];
 }
 

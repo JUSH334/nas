@@ -8,16 +8,19 @@
 # Started automatically at user logon by install_usb_sync.ps1.
 
 param(
-    [string]$Source = "C:\Users\owner\NAS\external_backups",
-    [string]$Target = "D:\nas-backups",
-    [int]$IntervalSeconds = 3
+    [string]$Source         = "C:\Users\owner\NAS\external_backups",
+    [string]$Target         = "D:\nas-backups",
+    [string]$UploadsSource  = "C:\Users\owner\NAS\uploads",
+    [string]$UsersTarget    = "D:\nas-users",
+    [int]$IntervalSeconds   = 3
 )
 
 $ErrorActionPreference = "Continue"
-$heartbeatFile  = Join-Path $Source ".usb_sync_status"
+$heartbeatFile   = Join-Path $Source ".usb_sync_status"
 $syncRequestFile = Join-Path $Source ".sync_request"
-$lastWriteUnix  = 0
-$lastManualUnix = 0
+$manifestFile    = Join-Path $Source ".user_manifest.json"
+$lastWriteUnix   = 0
+$lastManualUnix  = 0
 
 function Get-DriveCapacity([string]$path) {
     $root = [System.IO.Path]::GetPathRoot($path)
@@ -30,22 +33,100 @@ function Get-DriveCapacity([string]$path) {
     }
 }
 
-function Write-Heartbeat([int]$count, [string]$status, [int]$rc = 0, [int64]$lastWrite = 0, [int64]$lastManual = 0) {
+# Mirrors each user's uploads/<id>/ directory to D:\nas-users\<hash>\ using
+# the manifest written by PHP. Folder names are opaque hashes so physical
+# theft of the USB doesn't reveal who owns what.
+# Returns @{ users=N; files=N; bytes=N }.
+function Sync-UserArchives {
+    $stats = @{ users = 0; files = 0; bytes = [int64]0 }
+    if (-not (Test-Path $manifestFile))   { return $stats }
+    if (-not (Test-Path $UploadsSource))  { return $stats }
+    if (-not (Test-Path $UsersTarget)) {
+        New-Item -ItemType Directory -Path $UsersTarget -Force | Out-Null
+    }
+
+    try {
+        $manifest = Get-Content $manifestFile -Raw | ConvertFrom-Json
+    } catch { return $stats }
+    if (-not $manifest.users) { return $stats }
+
+    # Collect the set of active hashes so we can detect orphaned folders
+    $activeHashes = @{}
+
+    foreach ($prop in $manifest.users.PSObject.Properties) {
+        $userId = $prop.Name
+        $hash   = $prop.Value.hash
+        if (-not $hash) { continue }
+        $activeHashes[$hash] = $true
+
+        $userSrc = Join-Path $UploadsSource $userId
+        $userDst = Join-Path $UsersTarget $hash
+        if (-not (Test-Path $userSrc)) { continue }
+
+        if (-not (Test-Path $userDst)) {
+            New-Item -ItemType Directory -Path $userDst -Force | Out-Null
+        }
+
+        # /E = append-only (copy new, never delete from target) - matches
+        # the backup archive semantics; a user deleting a file in the NAS
+        # doesn't wipe it from their USB archive.
+        $null = robocopy $userSrc $userDst /E /R:0 /W:0 /NP /NDL /NJH /NJS /NFL 2>&1
+
+        $files = Get-ChildItem $userDst -File -Recurse -ErrorAction SilentlyContinue
+        if ($files) {
+            $stats.files += $files.Count
+            $stats.bytes += ($files | Measure-Object Length -Sum).Sum
+        }
+        $stats.users++
+    }
+
+    # Orphaned folders: hashes on USB that aren't in the current manifest.
+    # These belong to deleted users - we KEEP them as a forensic archive
+    # (append-only applies at the user level too) but count them separately
+    # so admins can see how much reclaimable space is tied up in them.
+    $stats.orphans      = 0
+    $stats.orphan_files = 0
+    $stats.orphan_bytes = [int64]0
+    $orphanDirs = Get-ChildItem $UsersTarget -Directory -ErrorAction SilentlyContinue
+    foreach ($dir in $orphanDirs) {
+        if (-not $activeHashes.ContainsKey($dir.Name)) {
+            $stats.orphans++
+            $orphanFiles = Get-ChildItem $dir.FullName -File -Recurse -ErrorAction SilentlyContinue
+            if ($orphanFiles) {
+                $stats.orphan_files += $orphanFiles.Count
+                $stats.orphan_bytes += ($orphanFiles | Measure-Object Length -Sum).Sum
+            }
+        }
+    }
+    return $stats
+}
+
+function Write-Heartbeat([int]$count, [string]$status, [int]$rc = 0, [int64]$lastWrite = 0, [int64]$lastManual = 0, $userStats = $null) {
+    if (-not $userStats) {
+        $userStats = @{ users = 0; files = 0; bytes = [int64]0; orphans = 0; orphan_files = 0; orphan_bytes = [int64]0 }
+    }
     $cap = Get-DriveCapacity $Target
     $payload = @{
-        last_sync          = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        last_sync_unix     = [int][DateTimeOffset]::Now.ToUnixTimeSeconds()
-        last_write_unix    = $lastWrite
-        last_manual_unix   = $lastManual
-        files_mirrored     = $count
-        target_path        = $Target
-        target_total_bytes = $cap.total
-        target_free_bytes  = $cap.free
-        status             = $status
-        robocopy_code      = $rc
-        watcher_pid        = $PID
-        poll_interval_s    = $IntervalSeconds
-        mode               = "archive"
+        last_sync             = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        last_sync_unix        = [int][DateTimeOffset]::Now.ToUnixTimeSeconds()
+        last_write_unix       = $lastWrite
+        last_manual_unix      = $lastManual
+        files_mirrored        = $count
+        target_path           = $Target
+        target_total_bytes    = $cap.total
+        target_free_bytes     = $cap.free
+        status                = $status
+        robocopy_code         = $rc
+        watcher_pid           = $PID
+        poll_interval_s       = $IntervalSeconds
+        mode                  = "archive"
+        users_target          = $UsersTarget
+        users_archived        = $userStats.users
+        user_files_mirrored   = $userStats.files
+        user_bytes_mirrored   = [int64]$userStats.bytes
+        orphan_users          = $userStats.orphans
+        orphan_user_files     = $userStats.orphan_files
+        orphan_user_bytes     = [int64]$userStats.orphan_bytes
     } | ConvertTo-Json -Compress
     Set-Content -Path $heartbeatFile -Value $payload -Encoding ASCII -Force
 }
@@ -66,7 +147,7 @@ while ($true) {
     if (-not (Test-Path $targetRoot)) {
         if (-not $lastTargetMissing) {
             Write-Output "$(Get-Date -Format 'HH:mm:ss') USB drive $targetRoot not present - pausing sync"
-            Write-Heartbeat 0 "usb_unplugged" 0 $lastWriteUnix $lastManualUnix
+            Write-Heartbeat 0 "usb_unplugged" 0 $lastWriteUnix $lastManualUnix $null
             $lastTargetMissing = $true
         }
         Start-Sleep -Seconds $IntervalSeconds
@@ -96,9 +177,12 @@ while ($true) {
     $null = robocopy $Source $Target *.zip /E /R:0 /W:0 /NP /NDL /NJH /NJS /NFL 2>&1
     $rc = $LASTEXITCODE
 
+    # Per-user file archive sync (uploads/<id>/ -> D:\nas-users\<hash>\)
+    $userStats = Sync-UserArchives
+
     if ($rc -ge 8) {
         Write-Output "$(Get-Date -Format 'HH:mm:ss') ERROR: robocopy returned $rc"
-        Write-Heartbeat 0 "error" $rc $lastWriteUnix $lastManualUnix
+        Write-Heartbeat 0 "error" $rc $lastWriteUnix $lastManualUnix $userStats
     } else {
         $count = (Get-ChildItem $Target -Filter *.zip -ErrorAction SilentlyContinue | Measure-Object).Count
         # Robocopy exit codes: bit 0 (1) = files copied, bit 1 (2) = extras removed
@@ -107,9 +191,9 @@ while ($true) {
         }
         $status = if ($manualRequested) { "ok_manual" } else { "ok" }
         if ($manualRequested) {
-            Write-Output "$(Get-Date -Format 'HH:mm:ss') Manual sync complete (robocopy code $rc, $count file(s) on USB)"
+            Write-Output "$(Get-Date -Format 'HH:mm:ss') Manual sync complete (robocopy code $rc, $count backup zip(s), $($userStats.files) user file(s))"
         }
-        Write-Heartbeat $count $status $rc $lastWriteUnix $lastManualUnix
+        Write-Heartbeat $count $status $rc $lastWriteUnix $lastManualUnix $userStats
     }
 
     Start-Sleep -Seconds $IntervalSeconds
