@@ -5,24 +5,6 @@ require_once 'db.php';
 
 $user = current_user();
 
-// ── Disk usage ──────────────────────────────────────────
-$upload_dir  = '/var/www/uploads';
-$total_disk  = disk_total_space('/');
-$free_disk   = disk_free_space('/');
-$used_disk   = $total_disk - $free_disk;
-$disk_pct    = $total_disk > 0 ? round(($used_disk / $total_disk) * 100, 1) : 0;
-
-// Upload folder size
-function dir_size(string $path): int {
-    $size = 0;
-    if (!is_dir($path)) return 0;
-    foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($path, FilesystemIterator::SKIP_DOTS)) as $f) {
-        $size += $f->getSize();
-    }
-    return $size;
-}
-$uploads_used = dir_size($upload_dir);
-
 function fmt($bytes): string {
     if ($bytes >= 1073741824) return round($bytes / 1073741824, 2) . ' GB';
     if ($bytes >= 1048576)    return round($bytes / 1048576, 1)    . ' MB';
@@ -30,11 +12,48 @@ function fmt($bytes): string {
     return $bytes . ' B';
 }
 
-// ── CPU & memory (Linux /proc) ───────────────────────────
+function fmt_uptime(int $sec): string {
+    if ($sec <= 0) return '—';
+    $d = intdiv($sec, 86400);
+    $h = intdiv($sec % 86400, 3600);
+    $m = intdiv($sec % 3600, 60);
+    if ($d > 0) return "{$d}d {$h}h";
+    if ($h > 0) return "{$h}h {$m}m";
+    return "{$m}m";
+}
+
+function fmt_ago(?string $ts): string {
+    if (!$ts) return 'never';
+    $diff = time() - strtotime($ts);
+    if ($diff < 60)    return $diff . 's ago';
+    if ($diff < 3600)  return intdiv($diff, 60) . 'm ago';
+    if ($diff < 86400) return intdiv($diff, 3600) . 'h ago';
+    return intdiv($diff, 86400) . 'd ago';
+}
+
+// ── Storage volumes ─────────────────────────────────────
+// Measure the actual NAS data mounts, not the container root.
+$uploads_mount = '/var/www/uploads';
+$backups_mount = '/var/www/backups';
+
+$uploads_total = @disk_total_space($uploads_mount) ?: 0;
+$uploads_free  = @disk_free_space($uploads_mount)  ?: 0;
+$uploads_used  = $uploads_total - $uploads_free;
+$uploads_pct   = $uploads_total > 0 ? round(($uploads_used / $uploads_total) * 100, 1) : 0;
+
+$backups_total = @disk_total_space($backups_mount) ?: 0;
+$backups_free  = @disk_free_space($backups_mount)  ?: 0;
+$backups_used  = $backups_total - $backups_free;
+$backups_pct   = $backups_total > 0 ? round(($backups_used / $backups_total) * 100, 1) : 0;
+
+// Are uploads + backups on the same underlying disk? (true for Docker Desktop on Windows)
+$same_volume = ($uploads_total === $backups_total && $uploads_free === $backups_free);
+
+// ── Server CPU / Memory / Uptime / Load (container view) ─
 function cpu_usage(): float {
-    // Two samples 500ms apart for a real reading
+    if (!is_readable('/proc/stat')) return 0;
     $s1 = file('/proc/stat')[0];
-    usleep(500000);
+    usleep(150000); // 150ms — enough signal, less page lag than 500ms
     $s2 = file('/proc/stat')[0];
 
     $p1 = array_slice(explode(' ', preg_replace('/\s+/', ' ', trim($s1))), 1);
@@ -50,8 +69,10 @@ function cpu_usage(): float {
 }
 
 function mem_info(): array {
+    if (!is_readable('/proc/meminfo')) return ['total' => 0, 'used' => 0, 'pct' => 0];
     $info = [];
     foreach (file('/proc/meminfo') as $line) {
+        if (!str_contains($line, ':')) continue;
         [$key, $val] = explode(':', $line);
         $info[trim($key)] = (int)trim(str_replace(' kB', '', $val)) * 1024;
     }
@@ -61,13 +82,51 @@ function mem_info(): array {
     return ['total' => $total, 'used' => $used, 'pct' => $total > 0 ? round(($used / $total) * 100, 1) : 0];
 }
 
-$cpu = cpu_usage();
-$mem = mem_info();
+function load_avg(): array {
+    if (!is_readable('/proc/loadavg')) return ['1' => '0.00', '5' => '0.00', '15' => '0.00'];
+    $parts = explode(' ', trim(file_get_contents('/proc/loadavg')));
+    return ['1' => $parts[0] ?? '0.00', '5' => $parts[1] ?? '0.00', '15' => $parts[2] ?? '0.00'];
+}
 
-// ── DB stats ─────────────────────────────────────────────
-$total_users = $pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
-$total_files = $pdo->query('SELECT COUNT(*) FROM files WHERE is_folder = 0')->fetchColumn();
+function uptime_seconds(): int {
+    if (!is_readable('/proc/uptime')) return 0;
+    $parts = explode(' ', trim(file_get_contents('/proc/uptime')));
+    return (int)floatval($parts[0] ?? 0);
+}
+
+$cpu        = cpu_usage();
+$mem        = mem_info();
+$load       = load_avg();
+$uptime_s   = uptime_seconds();
+$cpu_cores  = (int)trim(@shell_exec('nproc') ?: '1');
+$load1_pct  = $cpu_cores > 0 ? min(100, round(((float)$load['1'] / $cpu_cores) * 100)) : 0;
+
+// ── DB-derived stats (source of truth for stored bytes) ──
+$total_users   = $pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
+$total_files   = $pdo->query('SELECT COUNT(*) FROM files WHERE is_folder = 0')->fetchColumn();
 $total_folders = $pdo->query('SELECT COUNT(*) FROM files WHERE is_folder = 1')->fetchColumn();
+$uploads_db    = (int)$pdo->query('SELECT COALESCE(SUM(filesize),0) FROM files WHERE is_folder = 0')->fetchColumn();
+$backups_db    = (int)$pdo->query('SELECT COALESCE(SUM(filesize),0) FROM backups')->fetchColumn();
+$backups_count = (int)$pdo->query('SELECT COUNT(*) FROM backups')->fetchColumn();
+
+// Active sessions = users with a login in the last 30 minutes
+$active_users = $pdo->query(
+    "SELECT username, role, last_login
+     FROM users
+     WHERE last_login IS NOT NULL AND last_login >= NOW() - INTERVAL 30 MINUTE
+     ORDER BY last_login DESC
+     LIMIT 8"
+)->fetchAll();
+$active_count = count($active_users);
+
+// Last automatic backup
+$last_auto = $pdo->query(
+    "SELECT filename, filesize, created_at
+     FROM backups
+     WHERE filename LIKE 'nas_auto_backup_%'
+     ORDER BY created_at DESC
+     LIMIT 1"
+)->fetch();
 
 // Recent uploads (last 10)
 $recent = $pdo->query('
@@ -90,12 +149,12 @@ $user_storage = $pdo->query('
 ')->fetchAll();
 
 function file_icon(string $type): string {
-    if (str_starts_with($type, 'image/')) return '🖼️';
-    if (str_starts_with($type, 'video/')) return '🎬';
-    if (str_starts_with($type, 'audio/')) return '🎵';
-    if ($type === 'application/pdf')       return '📄';
-    if (str_contains($type, 'zip') || str_contains($type, 'tar')) return '🗜️';
-    return '📃';
+    if (str_starts_with($type, 'image/')) return 'IMG';
+    if (str_starts_with($type, 'video/')) return 'VID';
+    if (str_starts_with($type, 'audio/')) return 'AUD';
+    if ($type === 'application/pdf')       return 'PDF';
+    if (str_contains($type, 'zip') || str_contains($type, 'tar')) return 'ZIP';
+    return 'FILE';
 }
 ?>
 <!DOCTYPE html>
@@ -132,13 +191,45 @@ function file_icon(string $type): string {
   .nav-links { display: flex; gap: 4px; flex: 1; }
   .nav-link { color: var(--muted); text-decoration: none; font-size: 14px; padding: 6px 12px; border-radius: var(--radius); transition: color 0.15s, background 0.15s; }
   .nav-link:hover, .nav-link.active { color: var(--text); background: var(--surface2); }
-  .nav-link.active { color: var(--accent); }
+  .nav-link:hover { box-shadow: inset 0 0 0 1px rgba(79,255,176,0.2); }
+  .nav-link.active { color: var(--accent); box-shadow: inset 0 0 0 1px rgba(79,255,176,0.3); }
   .nav-user { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
   .nav-user strong { color: var(--text); }
+  .nav-user-link { color: var(--muted); text-decoration: none; padding: 4px 8px; border-radius: var(--radius); border: 1px solid transparent; transition: border-color 0.15s, color 0.15s; }
+  .nav-user-link:hover { border-color: rgba(79,255,176,0.3); color: var(--text); background: rgba(79,255,176,0.06); box-shadow: 0 0 0 3px rgba(79,255,176,0.08); }
+  .nav-user-link:hover strong { color: var(--accent); }
+  .role-badge { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; font-family: 'Space Mono', monospace; padding: 3px 8px; border-radius: 4px; text-transform: uppercase; }
+  .role-badge.admin { color: #00bfff; background: rgba(0,191,255,0.1); border: 1px solid rgba(0,191,255,0.3); }
   .nav-user a { color: var(--muted); text-decoration: none; font-size: 12px; padding: 4px 10px; border: 1px solid var(--border); border-radius: var(--radius); transition: border-color 0.15s, color 0.15s; }
-  .nav-user a:hover { border-color: var(--danger); color: var(--danger); }
+  .nav-user a[href="/logout.php"]:hover { border-color: var(--danger); color: var(--danger); }
 
   main { padding: 28px; max-width: 1100px; width: 100%; margin: 0 auto; flex: 1; }
+
+  .page-hero {
+    display: flex; align-items: center; justify-content: space-between; gap: 20px;
+    padding: 22px 26px; margin-bottom: 24px;
+    background: linear-gradient(135deg, var(--surface) 0%, var(--surface2) 100%);
+    border: 1px solid var(--border); border-radius: 10px;
+    position: relative; overflow: hidden;
+    animation: fadeUp 0.4s ease both;
+  }
+  .page-hero::before {
+    content: ''; position: absolute;
+    top: -60px; right: -60px; width: 220px; height: 220px;
+    background: radial-gradient(circle, rgba(79,255,176,0.10) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .hero-title {
+    font-size: 22px; font-weight: 500; letter-spacing: -0.3px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text; color: transparent;
+    margin-bottom: 4px;
+  }
+  .hero-sub { font-size: 13px; color: var(--muted); }
+  .hero-stat { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; position: relative; z-index: 1; }
+  .hero-stat-value { font-family: 'Space Mono', monospace; font-size: 28px; font-weight: 700; color: var(--accent); line-height: 1; }
+  .hero-stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
 
   h1 { font-size: 20px; font-weight: 500; margin-bottom: 24px; }
 
@@ -228,7 +319,20 @@ function file_icon(string $type): string {
     font-size: 13px;
   }
   .upload-item:last-child { border-bottom: none; }
-  .upload-icon { font-size: 18px; flex-shrink: 0; }
+  .upload-icon {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: var(--accent);
+    background: rgba(79,255,176,0.08);
+    border: 1px solid rgba(79,255,176,0.2);
+    padding: 3px 6px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    min-width: 38px;
+    text-align: center;
+  }
   .upload-name { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; }
   .upload-meta { color: var(--muted); font-size: 11px; white-space: nowrap; text-align: right; }
 
@@ -251,29 +355,66 @@ function file_icon(string $type): string {
 <nav>
   <a class="nav-logo" href="/">NAS</a>
   <div class="nav-links">
-    <a class="nav-link" href="/">📁 Files</a>
+    <a class="nav-link" href="/">Files</a>
     <?php if (is_admin()): ?>
-    <a class="nav-link" href="/users.php">👥 Users</a>
+    <a class="nav-link" href="/users.php">Users</a>
     <?php endif; ?>
-    <a class="nav-link active" href="/monitor.php">📊 Monitor</a>
+    <a class="nav-link active" href="/monitor.php">Monitor</a>
     <?php if (is_admin()): ?>
-    <a class="nav-link" href="/logs.php">📋 Logs</a>
+    <a class="nav-link" href="/logs.php">Logs</a>
     <?php endif; ?>
     <?php if (is_admin()): ?>
-    <a class="nav-link" href="/backup.php">💾 Backups</a>
+    <a class="nav-link" href="/backup.php">Backups</a>
     <?php endif; ?>
   </div>
   <div class="nav-user">
-    <span>Hello, <strong><?= htmlspecialchars($user['username']) ?></strong></span>
-    <?php if (is_admin()): ?><span style="color:var(--accent);font-size:11px;font-family:'Space Mono',monospace">ADMIN</span><?php endif; ?>
+    <a href="/profile.php" class="nav-user-link">Hello, <strong><?= htmlspecialchars($user['username']) ?></strong></a>
+    <?php if (is_admin()): ?><span class="role-badge admin">Admin</span><?php endif; ?>
     <a href="/logout.php">Sign out</a>
   </div>
 </nav>
 
 <main>
-  <h1>System Monitor</h1>
+  <div class="page-hero">
+    <div>
+      <h1 class="hero-title">System Health</h1>
+      <p class="hero-sub">Real-time insights into your NAS server, storage volumes, and active sessions.</p>
+    </div>
+    <div class="hero-stat">
+      <span class="hero-stat-value"><?= fmt_uptime($uptime_s) ?></span>
+      <span class="hero-stat-label">Uptime</span>
+    </div>
+  </div>
 
-  <!-- Stat cards -->
+  <h1 style="font-size:16px;font-weight:500;margin-bottom:18px;color:var(--muted);">Server</h1>
+
+  <!-- Server stat cards -->
+  <div class="stat-grid">
+    <div class="stat-card">
+      <div class="stat-label">Uptime</div>
+      <div class="stat-value" style="font-size:20px"><?= fmt_uptime($uptime_s) ?></div>
+      <div class="stat-sub">since last server restart</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Load Average</div>
+      <div class="stat-value" style="font-size:18px"><?= $load['1'] ?> · <?= $load['5'] ?> · <?= $load['15'] ?></div>
+      <div class="stat-sub"><?= $cpu_cores ?> cores · 1m / 5m / 15m</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Active Sessions</div>
+      <div class="stat-value"><?= $active_count ?></div>
+      <div class="stat-sub">logged in last 30 min</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Last Auto Backup</div>
+      <div class="stat-value" style="font-size:18px"><?= $last_auto ? fmt_ago($last_auto['created_at']) : 'never' ?></div>
+      <div class="stat-sub"><?= $last_auto ? fmt((int)$last_auto['filesize']) : 'no backups yet' ?></div>
+    </div>
+  </div>
+
+  <h1 style="font-size:16px;font-weight:500;margin-bottom:18px;color:var(--muted);">Storage</h1>
+
+  <!-- Storage stat cards -->
   <div class="stat-grid">
     <div class="stat-card">
       <div class="stat-label">Total Users</div>
@@ -287,13 +428,13 @@ function file_icon(string $type): string {
     </div>
     <div class="stat-card">
       <div class="stat-label">Uploads Size</div>
-      <div class="stat-value" style="font-size:20px"><?= fmt($uploads_used) ?></div>
-      <div class="stat-sub">in /uploads</div>
+      <div class="stat-value" style="font-size:20px"><?= fmt($uploads_db) ?></div>
+      <div class="stat-sub">across all users</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Disk Free</div>
-      <div class="stat-value" style="font-size:20px"><?= fmt($free_disk) ?></div>
-      <div class="stat-sub">of <?= fmt($total_disk) ?> total</div>
+      <div class="stat-label">Backups Size</div>
+      <div class="stat-value" style="font-size:20px"><?= fmt($backups_db) ?></div>
+      <div class="stat-sub"><?= $backups_count ?> archives</div>
     </div>
   </div>
 
@@ -302,34 +443,72 @@ function file_icon(string $type): string {
     <?php
       $cpu_class = $cpu >= 80 ? 'danger' : ($cpu >= 60 ? 'warn' : 'ok');
       $mem_class = $mem['pct'] >= 85 ? 'danger' : ($mem['pct'] >= 65 ? 'warn' : 'ok');
-      $dsk_class = $disk_pct >= 85 ? 'danger' : ($disk_pct >= 65 ? 'warn' : 'ok');
+      $up_class  = $uploads_pct >= 85 ? 'danger' : ($uploads_pct >= 65 ? 'warn' : 'ok');
+      $bk_class  = $backups_pct >= 85 ? 'danger' : ($backups_pct >= 65 ? 'warn' : 'ok');
     ?>
     <div class="gauge-card">
       <div class="gauge-header">
-        <span class="gauge-title">⚡ CPU Usage</span>
+        <span class="gauge-title">Uploads Volume</span>
+        <span class="gauge-pct <?= $up_class ?>"><?= $uploads_pct ?>%</span>
+      </div>
+      <div class="bar-track"><div class="bar-fill <?= $up_class ?>" style="width:<?= $uploads_pct ?>%"></div></div>
+      <div class="gauge-meta"><span><?= fmt($uploads_used) ?> used</span><span><?= fmt($uploads_total) ?> total</span></div>
+    </div>
+
+    <?php if (!$same_volume): ?>
+    <div class="gauge-card">
+      <div class="gauge-header">
+        <span class="gauge-title">Backups Volume</span>
+        <span class="gauge-pct <?= $bk_class ?>"><?= $backups_pct ?>%</span>
+      </div>
+      <div class="bar-track"><div class="bar-fill <?= $bk_class ?>" style="width:<?= $backups_pct ?>%"></div></div>
+      <div class="gauge-meta"><span><?= fmt($backups_used) ?> used</span><span><?= fmt($backups_total) ?> total</span></div>
+    </div>
+    <?php endif; ?>
+
+    <div class="gauge-card">
+      <div class="gauge-header">
+        <span class="gauge-title">CPU Usage</span>
         <span class="gauge-pct <?= $cpu_class ?>"><?= $cpu ?>%</span>
       </div>
       <div class="bar-track"><div class="bar-fill <?= $cpu_class ?>" style="width:<?= $cpu ?>%"></div></div>
-      <div class="gauge-meta"><span>0%</span><span>100%</span></div>
+      <div class="gauge-meta"><span>load 1m: <?= $load['1'] ?> (<?= $load1_pct ?>% of <?= $cpu_cores ?>c)</span><span>0–100%</span></div>
     </div>
 
     <div class="gauge-card">
       <div class="gauge-header">
-        <span class="gauge-title">🧠 Memory</span>
+        <span class="gauge-title">Memory</span>
         <span class="gauge-pct <?= $mem_class ?>"><?= $mem['pct'] ?>%</span>
       </div>
       <div class="bar-track"><div class="bar-fill <?= $mem_class ?>" style="width:<?= $mem['pct'] ?>%"></div></div>
       <div class="gauge-meta"><span><?= fmt($mem['used']) ?> used</span><span><?= fmt($mem['total']) ?> total</span></div>
     </div>
+  </div>
 
-    <div class="gauge-card">
-      <div class="gauge-header">
-        <span class="gauge-title">💾 Disk Usage</span>
-        <span class="gauge-pct <?= $dsk_class ?>"><?= $disk_pct ?>%</span>
-      </div>
-      <div class="bar-track"><div class="bar-fill <?= $dsk_class ?>" style="width:<?= $disk_pct ?>%"></div></div>
-      <div class="gauge-meta"><span><?= fmt($used_disk) ?> used</span><span><?= fmt($total_disk) ?> total</span></div>
-    </div>
+  <?php if ($same_volume): ?>
+  <p style="font-size:11px;color:var(--muted);margin:-14px 0 22px;font-family:'Space Mono',monospace;">
+    NOTE — uploads and backups are bind-mounted to the same host disk, so they share one volume gauge.
+  </p>
+  <?php endif; ?>
+
+  <!-- Active sessions panel -->
+  <div class="panel" style="margin-bottom:14px;">
+    <div class="panel-header">Active Sessions <span style="color:var(--muted);font-weight:400;margin-left:6px;">(last 30 min)</span></div>
+    <?php if ($active_count === 0): ?>
+      <div class="empty">No recent logins.</div>
+    <?php else: ?>
+      <ul class="upload-list">
+        <?php foreach ($active_users as $au): ?>
+        <li class="upload-item">
+          <span class="upload-icon" style="<?= $au['role']==='admin' ? 'color:#00bfff;background:rgba(0,191,255,0.08);border-color:rgba(0,191,255,0.25);' : '' ?>">
+            <?= $au['role'] === 'admin' ? 'ADM' : 'USR' ?>
+          </span>
+          <span class="upload-name"><?= htmlspecialchars($au['username']) ?></span>
+          <span class="upload-meta"><?= fmt_ago($au['last_login']) ?></span>
+        </li>
+        <?php endforeach; ?>
+      </ul>
+    <?php endif; ?>
   </div>
 
   <!-- Bottom panels -->
@@ -337,7 +516,7 @@ function file_icon(string $type): string {
 
     <!-- Recent uploads -->
     <div class="panel">
-      <div class="panel-header">🕐 Recent Uploads</div>
+      <div class="panel-header">Recent Uploads</div>
       <?php if (empty($recent)): ?>
         <div class="empty">No files uploaded yet.</div>
       <?php else: ?>
@@ -358,7 +537,7 @@ function file_icon(string $type): string {
 
     <!-- Per-user storage -->
     <div class="panel">
-      <div class="panel-header">👤 Storage by User</div>
+      <div class="panel-header">Storage by User</div>
       <?php if (empty($user_storage)): ?>
         <div class="empty">No users yet.</div>
       <?php else:
@@ -375,7 +554,7 @@ function file_icon(string $type): string {
             </span>
             <span class="user-size">
               <?= fmt((int)$u['used']) ?>
-              <?= $u['storage_quota'] ? ' / ' . fmt((int)$u['storage_quota']) : ' / ' . fmt((int)disk_total_space('/')) ?>
+              <?= $u['storage_quota'] ? ' / ' . fmt((int)$u['storage_quota']) : ' / unlimited' ?>
               · <?= $u['file_count'] ?> files
             </span>
           </div>

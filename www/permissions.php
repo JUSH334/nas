@@ -1,6 +1,6 @@
 <?php
 require_once 'auth.php';
-require_admin();
+require_login();
 require_once 'db.php';
 
 $user    = current_user();
@@ -15,6 +15,12 @@ $file = $stmt->fetch();
 
 if (!$file) {
     header('Location: /'); exit;
+}
+
+// Only owner or admin can manage permissions
+if ($file['owner_id'] != $user['id'] && !is_admin()) {
+    http_response_code(403);
+    die('Access denied. Only the file owner or an admin can manage permissions.');
 }
 
 // Handle permission update
@@ -52,11 +58,12 @@ $perms = $pdo->prepare('
 $perms->execute([$file_id]);
 $permissions = $perms->fetchAll();
 
-// Get users who don't have permissions set yet (for adding)
+// Get non-admin users who don't have permissions set yet (for adding)
+// Admins are excluded — they already have access to all files
 $assigned_ids = array_column($permissions, 'user_id');
 $assigned_ids[] = $file['owner_id']; // exclude owner
 $placeholders = implode(',', array_fill(0, count($assigned_ids), '?'));
-$available = $pdo->prepare("SELECT id, username, role FROM users WHERE id NOT IN ($placeholders) ORDER BY username");
+$available = $pdo->prepare("SELECT id, username, role FROM users WHERE id NOT IN ($placeholders) AND role != 'admin' ORDER BY username");
 $available->execute($assigned_ids);
 $available_users = $available->fetchAll();
 
@@ -99,11 +106,17 @@ $owner = $owner_stmt->fetch();
   .nav-links { display: flex; gap: 4px; flex: 1; }
   .nav-link { color: var(--muted); text-decoration: none; font-size: 14px; padding: 6px 12px; border-radius: var(--radius); transition: color 0.15s, background 0.15s; }
   .nav-link:hover, .nav-link.active { color: var(--text); background: var(--surface2); }
-  .nav-link.active { color: var(--accent); }
+  .nav-link:hover { box-shadow: inset 0 0 0 1px rgba(79,255,176,0.2); }
+  .nav-link.active { color: var(--accent); box-shadow: inset 0 0 0 1px rgba(79,255,176,0.3); }
   .nav-user { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
   .nav-user strong { color: var(--text); }
+  .nav-user-link { color: var(--muted); text-decoration: none; padding: 4px 8px; border-radius: var(--radius); border: 1px solid transparent; transition: border-color 0.15s, color 0.15s; }
+  .nav-user-link:hover { border-color: rgba(79,255,176,0.3); color: var(--text); background: rgba(79,255,176,0.06); box-shadow: 0 0 0 3px rgba(79,255,176,0.08); }
+  .nav-user-link:hover strong { color: var(--accent); }
+  .role-badge { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; font-family: 'Space Mono', monospace; padding: 3px 8px; border-radius: 4px; text-transform: uppercase; }
+  .role-badge.admin { color: #00bfff; background: rgba(0,191,255,0.1); border: 1px solid rgba(0,191,255,0.3); }
   .nav-user a { color: var(--muted); text-decoration: none; font-size: 12px; padding: 4px 10px; border: 1px solid var(--border); border-radius: var(--radius); transition: border-color 0.15s, color 0.15s; }
-  .nav-user a:hover { border-color: var(--danger); color: var(--danger); }
+  .nav-user a[href="/logout.php"]:hover { border-color: var(--danger); color: var(--danger); }
 
   main { padding: 28px; max-width: 800px; width: 100%; margin: 0 auto; flex: 1; }
   h1 { font-size: 20px; font-weight: 500; margin-bottom: 8px; }
@@ -113,7 +126,18 @@ $owner = $owner_stmt->fetch();
   .alert-success { background: rgba(79,255,176,0.1); border: 1px solid var(--accent); color: var(--accent); }
   .alert-error   { background: rgba(255,79,106,0.1); border: 1px solid var(--danger); color: var(--danger); }
 
-  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-bottom: 24px; }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-bottom: 24px; animation: fadeUp 0.4s ease both; animation-delay: 0.08s; }
+  h1 { animation: fadeUp 0.4s ease both; }
+  .subtitle { animation: fadeUp 0.4s ease both; animation-delay: 0.04s; }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .perm-row { animation: fadeUp 0.35s ease both; }
+  .perm-row:nth-child(1) { animation-delay: 0.14s; }
+  .perm-row:nth-child(2) { animation-delay: 0.18s; }
+  .perm-row:nth-child(3) { animation-delay: 0.22s; }
+  .perm-row:nth-child(n+4) { animation-delay: 0.26s; }
   .panel-header { padding: 16px 20px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 500; }
 
   .perm-row {
@@ -128,7 +152,10 @@ $owner = $owner_stmt->fetch();
   .perm-actions { flex-shrink: 0; }
 
   .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: var(--radius); font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500; cursor: pointer; border: none; text-decoration: none; transition: opacity 0.15s; }
-  .btn:hover { opacity: 0.85; }
+  .btn:hover { opacity: 0.92; transform: translateY(-1px); box-shadow: 0 4px 14px rgba(79,255,176,0.15); }
+  .btn:active { transform: translateY(0); box-shadow: 0 1px 4px rgba(79,255,176,0.12); }
+  .btn-secondary:hover { box-shadow: 0 4px 14px rgba(79,255,176,0.08); border-color: rgba(79,255,176,0.3); }
+  .btn-danger:hover { box-shadow: 0 4px 14px rgba(255,79,106,0.15); border-color: rgba(255,79,106,0.5); }
   .btn-primary   { background: var(--accent); color: #0d0f14; }
   .btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
   .btn-danger    { background: rgba(255,79,106,0.12); color: var(--danger); border: 1px solid rgba(255,79,106,0.25); }
@@ -158,8 +185,8 @@ $owner = $owner_stmt->fetch();
     <?php endif; ?>
   </div>
   <div class="nav-user">
-    <span>Hello, <strong><?= htmlspecialchars($user['username']) ?></strong></span>
-    <?php if (is_admin()): ?><span style="color:var(--accent);font-size:11px;font-family:'Space Mono',monospace">ADMIN</span><?php endif; ?>
+    <a href="/profile.php" class="nav-user-link">Hello, <strong><?= htmlspecialchars($user['username']) ?></strong></a>
+    <?php if (is_admin()): ?><span class="role-badge admin">Admin</span><?php endif; ?>
     <a href="/logout.php">Sign out</a>
   </div>
 </nav>
@@ -167,7 +194,14 @@ $owner = $owner_stmt->fetch();
 <main>
   <a class="back-link" href="<?= $file['parent_id'] ? '/?folder=' . $file['parent_id'] : '/' ?>">&larr; Back to files</a>
 
-  <h1><?= $file['is_folder'] ? '📁' : '📄' ?> <?= htmlspecialchars($file['filename']) ?></h1>
+  <h1 style="display:flex;align-items:center;gap:10px;">
+    <?php if ($file['is_folder']): ?>
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+    <?php else: ?>
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+    <?php endif; ?>
+    <?= htmlspecialchars($file['filename']) ?>
+  </h1>
   <p class="subtitle">Owner: <?= htmlspecialchars($owner['username'] ?? 'unknown') ?><span class="owner-badge">OWNER</span> &middot; Manage who can access this <?= $file['is_folder'] ? 'folder' : 'file' ?></p>
 
   <?php if ($message): ?>
@@ -214,7 +248,7 @@ $owner = $owner_stmt->fetch();
       <select name="user_id" required>
         <option value="">Select a user...</option>
         <?php foreach ($available_users as $au): ?>
-        <option value="<?= $au['id'] ?>"><?= htmlspecialchars($au['username']) ?> (<?= $au['role'] ?>)</option>
+        <option value="<?= $au['id'] ?>"><?= htmlspecialchars($au['username']) ?></option>
         <?php endforeach; ?>
       </select>
       <label class="perm-check"><input type="checkbox" name="can_read" checked> Read</label>

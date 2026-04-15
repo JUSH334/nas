@@ -56,8 +56,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'creat
         $stmt = $pdo->prepare('INSERT INTO backups (filename, filepath, filesize, created_by) VALUES (?, ?, ?, ?)');
         $stmt->execute(["{$backup_name}.zip", $zip_file, $size, $user['id']]);
         $message = "Backup created successfully: {$backup_name}.zip";
+
+        // Log to backup log
+        $log_entry = date('Y-m-d H:i:s') . " OK: Manual backup created by {$user['username']}: {$backup_name}.zip (" . round($size / 1024) . " KB)\n";
+        file_put_contents('/var/log/backup_cron.log', $log_entry, FILE_APPEND);
     } else {
         $error = "Backup failed. MySQL dump returned code {$return_code}.";
+        $log_entry = date('Y-m-d H:i:s') . " ERROR: Manual backup by {$user['username']} failed (code {$return_code})\n";
+        file_put_contents('/var/log/backup_cron.log', $log_entry, FILE_APPEND);
     }
 }
 
@@ -125,24 +131,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'resto
 
 // Schedule backup
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'schedule') {
-    $schedule = $_POST['schedule'] ?? 'none';
-    $cron_map = [
-        'daily'   => '0 2 * * *',      // 2:00 AM daily
-        'weekly'  => '0 2 * * 0',      // 2:00 AM Sunday
-        'monthly' => '0 2 1 * *',      // 2:00 AM 1st of month
-        'none'    => '',
-    ];
+    $frequency = $_POST['frequency'] ?? 'none';
+    // Parse HH:MM from time_slot
+    $time_slot = $_POST['time_slot'] ?? '02:00';
+    [$hour, $minute] = array_pad(explode(':', $time_slot), 2, '0');
+    $hour   = max(0, min(23, (int)$hour));
+    $minute = max(0, min(59, (int)$minute));
+    $weekdays  = $_POST['weekdays'] ?? [];           // array of 0-6
+    $days_of_month = $_POST['days_of_month'] ?? [];
 
-    $cron_expr = $cron_map[$schedule] ?? '';
-    $cron_job  = "$cron_expr php /var/www/html/cron_backup.php >> /var/log/backup_cron.log 2>&1";
+    $cron_expr = '';
+    if ($frequency === 'daily') {
+        $cron_expr = "$minute $hour * * *";
+    } elseif ($frequency === 'weekly') {
+        // Filter to 0-6 and build comma-separated list
+        $days = array_filter(array_map('intval', $weekdays), fn($d) => $d >= 0 && $d <= 6);
+        $days = array_unique($days);
+        if (empty($days)) $days = [0]; // default Sunday
+        sort($days);
+        $cron_expr = "$minute $hour * * " . implode(',', $days);
+    } elseif ($frequency === 'monthly') {
+        $dom = array_filter(array_map('intval', $days_of_month), fn($d) => $d >= 1 && $d <= 31);
+        $dom = array_unique($dom);
+        if (empty($dom)) $dom = [1];
+        sort($dom);
+        $cron_expr = "$minute $hour " . implode(',', $dom) . " * *";
+    }
 
-    // Remove existing NAS backup cron entries
+    $cron_job = "$cron_expr php /var/www/html/cron_backup.php >> /var/log/backup_cron.log 2>&1";
+
     exec("crontab -l 2>/dev/null | grep -v 'cron_backup.php' | crontab - 2>&1");
 
     if ($cron_expr !== '') {
-        // Add new cron entry
         exec("(crontab -l 2>/dev/null; echo '$cron_job') | crontab - 2>&1");
-        $message = "Automatic backups scheduled: $schedule";
+        $message = "Backup schedule saved: $cron_expr";
     } else {
         $message = "Automatic backups disabled.";
     }
@@ -150,15 +172,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'sched
 
 // Read current schedule
 $current_schedule = 'none';
+$current_time = '02:00';
+$current_weekdays = [0];  // Sunday by default
+$current_days_of_month = [1];
 $cron_output = [];
 exec('crontab -l 2>/dev/null', $cron_output);
-$cron_text = implode("\n", $cron_output);
-if (str_contains($cron_text, '0 2 * * * php') && str_contains($cron_text, 'cron_backup.php')) {
-    $current_schedule = 'daily';
-} elseif (str_contains($cron_text, '0 2 * * 0') && str_contains($cron_text, 'cron_backup.php')) {
-    $current_schedule = 'weekly';
-} elseif (str_contains($cron_text, '0 2 1 * *') && str_contains($cron_text, 'cron_backup.php')) {
-    $current_schedule = 'monthly';
+foreach ($cron_output as $line) {
+    if (str_contains($line, 'cron_backup.php')) {
+        if (preg_match('/^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+/', $line, $m)) {
+            $min  = (int)$m[1];
+            $hour = (int)$m[2];
+            $day  = $m[3];
+            $week = $m[5];
+            $current_time = sprintf('%02d:%02d', $hour, $min);
+
+            if ($day !== '*' && $day !== '?') {
+                $current_schedule = 'monthly';
+                $current_days_of_month = array_map('intval', explode(',', $day));
+            } elseif ($week !== '*' && $week !== '?') {
+                $current_schedule = 'weekly';
+                $current_weekdays = array_map('intval', explode(',', $week));
+            } else {
+                $current_schedule = 'daily';
+            }
+        }
+        break;
+    }
 }
 
 // Download backup
@@ -225,13 +264,45 @@ function fmt_size($bytes): string {
   .nav-links { display: flex; gap: 4px; flex: 1; }
   .nav-link { color: var(--muted); text-decoration: none; font-size: 14px; padding: 6px 12px; border-radius: var(--radius); transition: color 0.15s, background 0.15s; }
   .nav-link:hover, .nav-link.active { color: var(--text); background: var(--surface2); }
-  .nav-link.active { color: var(--accent); }
+  .nav-link:hover { box-shadow: inset 0 0 0 1px rgba(79,255,176,0.2); }
+  .nav-link.active { color: var(--accent); box-shadow: inset 0 0 0 1px rgba(79,255,176,0.3); }
   .nav-user { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
   .nav-user strong { color: var(--text); }
+  .nav-user-link { color: var(--muted); text-decoration: none; padding: 4px 8px; border-radius: var(--radius); border: 1px solid transparent; transition: border-color 0.15s, color 0.15s; }
+  .nav-user-link:hover { border-color: rgba(79,255,176,0.3); color: var(--text); background: rgba(79,255,176,0.06); box-shadow: 0 0 0 3px rgba(79,255,176,0.08); }
+  .nav-user-link:hover strong { color: var(--accent); }
+  .role-badge { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; font-family: 'Space Mono', monospace; padding: 3px 8px; border-radius: 4px; text-transform: uppercase; }
+  .role-badge.admin { color: #00bfff; background: rgba(0,191,255,0.1); border: 1px solid rgba(0,191,255,0.3); }
   .nav-user a { color: var(--muted); text-decoration: none; font-size: 12px; padding: 4px 10px; border: 1px solid var(--border); border-radius: var(--radius); transition: border-color 0.15s, color 0.15s; }
-  .nav-user a:hover { border-color: var(--danger); color: var(--danger); }
+  .nav-user a[href="/logout.php"]:hover { border-color: var(--danger); color: var(--danger); }
 
   main { padding: 28px; max-width: 1100px; width: 100%; margin: 0 auto; flex: 1; }
+
+  .page-hero {
+    display: flex; align-items: center; justify-content: space-between; gap: 20px;
+    padding: 22px 26px; margin-bottom: 24px;
+    background: linear-gradient(135deg, var(--surface) 0%, var(--surface2) 100%);
+    border: 1px solid var(--border); border-radius: 10px;
+    position: relative; overflow: hidden;
+    animation: fadeUp 0.4s ease both;
+  }
+  .page-hero::before {
+    content: ''; position: absolute;
+    top: -60px; right: -60px; width: 220px; height: 220px;
+    background: radial-gradient(circle, rgba(79,255,176,0.10) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .hero-title {
+    font-size: 22px; font-weight: 500; letter-spacing: -0.3px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text; color: transparent;
+    margin-bottom: 4px;
+  }
+  .hero-sub { font-size: 13px; color: var(--muted); }
+  .hero-stat { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; position: relative; z-index: 1; }
+  .hero-stat-value { font-family: 'Space Mono', monospace; font-size: 28px; font-weight: 700; color: var(--accent); line-height: 1; }
+  .hero-stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
 
   h1 { font-size: 20px; font-weight: 500; margin-bottom: 24px; }
 
@@ -254,7 +325,11 @@ function fmt_size($bytes): string {
     font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500;
     transition: opacity 0.15s;
   }
-  .btn:hover { opacity: 0.85; }
+  .btn:hover { opacity: 0.92; transform: translateY(-1px); box-shadow: 0 4px 14px rgba(79,255,176,0.15); }
+  .btn:active { transform: translateY(0); box-shadow: 0 1px 4px rgba(79,255,176,0.12); }
+  .btn-link:hover { box-shadow: 0 4px 14px rgba(79,255,176,0.08); border-color: rgba(79,255,176,0.3); transform: translateY(-1px); }
+  .btn-danger:hover { box-shadow: 0 4px 14px rgba(255,79,106,0.15); border-color: rgba(255,79,106,0.5); }
+  .btn-warn:hover { box-shadow: 0 4px 14px rgba(255,184,79,0.15); }
   .btn-primary { background: var(--accent); color: #0d0f14; }
   .btn-danger  { background: var(--danger); color: #fff; }
   .btn-warn    { background: var(--warn); color: #0d0f14; }
@@ -275,13 +350,115 @@ function fmt_size($bytes): string {
     padding: 14px 20px; border-bottom: 1px solid rgba(42,45,56,0.5);
   }
   .backup-item:last-child { border-bottom: none; }
-  .backup-icon { font-size: 24px; flex-shrink: 0; }
+  .backup-icon { color: var(--accent); flex-shrink: 0; display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; background: rgba(79,255,176,0.08); border: 1px solid rgba(79,255,176,0.2); border-radius: 6px; }
   .backup-info { flex: 1; }
   .backup-name { font-weight: 500; font-size: 14px; margin-bottom: 3px; }
   .backup-meta { font-size: 12px; color: var(--muted); }
   .backup-actions { display: flex; gap: 6px; flex-shrink: 0; }
 
   .empty { padding: 40px 20px; text-align: center; color: var(--muted); font-size: 13px; }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .create-card, .panel {
+    animation: fadeUp 0.4s ease both;
+  }
+  .create-card:nth-of-type(2) { animation-delay: 0.08s; }
+  .panel { animation-delay: 0.16s; }
+  .backup-item {
+    animation: fadeUp 0.35s ease both;
+  }
+  .backup-item:nth-child(1) { animation-delay: 0.20s; }
+  .backup-item:nth-child(2) { animation-delay: 0.24s; }
+  .backup-item:nth-child(3) { animation-delay: 0.28s; }
+  .backup-item:nth-child(4) { animation-delay: 0.32s; }
+  .backup-item:nth-child(n+5) { animation-delay: 0.36s; }
+
+  /* Fix dropdown options to match dark theme */
+  select option {
+    background: var(--surface);
+    color: var(--text);
+    padding: 8px;
+  }
+  select { color-scheme: dark; }
+  select:focus { border-color: var(--accent) !important; outline: none; }
+  .time-select:hover { border-color: var(--accent); }
+
+  /* Time picker component */
+  .time-picker {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 4px 8px;
+    transition: border-color 0.15s;
+  }
+  .time-picker:hover, .time-picker:focus-within { border-color: var(--accent); }
+
+  .tp-field {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+  }
+  .tp-arrow {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.12s, background 0.12s;
+  }
+  .tp-arrow:hover { color: var(--accent); background: var(--surface2); }
+  .tp-arrow:active { transform: scale(0.95); }
+
+  .tp-input {
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-family: 'Space Mono', monospace;
+    font-size: 16px;
+    font-weight: 600;
+    width: 28px;
+    text-align: center;
+    padding: 2px 0;
+    outline: none;
+  }
+  .tp-input:focus { color: var(--accent); }
+  .tp-input::-webkit-outer-spin-button,
+  .tp-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+  .tp-sep {
+    color: var(--muted);
+    font-family: 'Space Mono', monospace;
+    font-size: 16px;
+    font-weight: 600;
+    margin: 0 -2px;
+  }
+
+  .tp-ampm {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-left: 6px;
+    transition: all 0.12s;
+  }
+  .tp-ampm:hover { color: var(--accent); border-color: var(--accent); }
 
   .confirm-restore {
     display: none;
@@ -306,14 +483,25 @@ function fmt_size($bytes): string {
     <a class="nav-link active" href="/backup.php">Backups</a>
   </div>
   <div class="nav-user">
-    <span>Hello, <strong><?= htmlspecialchars($user['username']) ?></strong></span>
-    <?php if (is_admin()): ?><span style="color:var(--accent);font-size:11px;font-family:'Space Mono',monospace">ADMIN</span><?php endif; ?>
+    <a href="/profile.php" class="nav-user-link">Hello, <strong><?= htmlspecialchars($user['username']) ?></strong></a>
+    <?php if (is_admin()): ?><span class="role-badge admin">Admin</span><?php endif; ?>
     <a href="/logout.php">Sign out</a>
   </div>
 </nav>
 
 <main>
-  <h1>Backup &amp; Restore</h1>
+  <div class="page-hero">
+    <div>
+      <h1 class="hero-title">Data Protection</h1>
+      <p class="hero-sub">Your files are safe. Create manual backups or schedule them automatically.</p>
+    </div>
+    <div class="hero-stat">
+      <span class="hero-stat-value"><?= count($backups) ?></span>
+      <span class="hero-stat-label">Backups</span>
+    </div>
+  </div>
+
+  <h1 style="font-size:16px;font-weight:500;margin-bottom:18px;color:var(--muted);">Backup &amp; Restore</h1>
 
   <?php if ($message): ?>
     <div class="alert alert-success"><?= htmlspecialchars($message) ?></div>
@@ -335,22 +523,231 @@ function fmt_size($bytes): string {
   </div>
 
   <!-- Schedule automatic backups -->
-  <div class="create-card">
+  <div class="create-card" style="flex-direction:column;align-items:stretch;gap:16px;">
     <div class="create-info">
       <h2>Automatic Backups</h2>
-      <p>Schedule recurring backups. Currently: <strong style="color:var(--accent)"><?= $current_schedule === 'none' ? 'Disabled' : ucfirst($current_schedule) ?></strong></p>
+      <p>Schedule recurring backups with flexible frequency. Currently:
+        <strong style="color:var(--accent)">
+          <?php if ($current_schedule === 'none'): ?>
+            Disabled
+          <?php elseif ($current_schedule === 'daily'): ?>
+            Daily at <?= $current_time ?>
+          <?php elseif ($current_schedule === 'weekly'):
+            $day_names = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+            $selected_day_names = array_map(fn($d) => $day_names[$d] ?? '?', $current_weekdays);
+          ?>
+            Weekly on <?= implode(', ', $selected_day_names) ?> at <?= $current_time ?>
+          <?php else:
+            $day_list = implode(', ', array_map(function($d) {
+                $suffix = ($d % 10 === 1 && $d !== 11) ? 'st' : (($d % 10 === 2 && $d !== 12) ? 'nd' : (($d % 10 === 3 && $d !== 13) ? 'rd' : 'th'));
+                return $d . $suffix;
+            }, $current_days_of_month));
+          ?>
+            Monthly on the <?= $day_list ?> at <?= $current_time ?>
+          <?php endif; ?>
+        </strong>
+      </p>
     </div>
-    <form method="post" style="display:flex;align-items:center;gap:10px;">
+    <form method="post" id="schedule-form" style="display:flex;flex-direction:column;gap:14px;">
       <input type="hidden" name="action" value="schedule">
-      <select name="schedule" style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 12px;">
-        <option value="none" <?= $current_schedule === 'none' ? 'selected' : '' ?>>Disabled</option>
-        <option value="daily" <?= $current_schedule === 'daily' ? 'selected' : '' ?>>Daily (2:00 AM)</option>
-        <option value="weekly" <?= $current_schedule === 'weekly' ? 'selected' : '' ?>>Weekly (Sunday 2:00 AM)</option>
-        <option value="monthly" <?= $current_schedule === 'monthly' ? 'selected' : '' ?>>Monthly (1st, 2:00 AM)</option>
-      </select>
-      <button type="submit" class="btn btn-primary">Save Schedule</button>
+
+      <!-- Frequency + time picker -->
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <label style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;">Frequency:</label>
+        <select name="frequency" id="freq-select" onchange="updateScheduleUI()" style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 30px 8px 12px;cursor:pointer;outline:none;appearance:none;-webkit-appearance:none;font-family:'DM Sans',sans-serif;background-image:url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2212%22 height=%2212%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%236b7080%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22><polyline points=%226 9 12 15 18 9%22/></svg>');background-repeat:no-repeat;background-position:right 10px center;">
+          <option value="none" <?= $current_schedule === 'none' ? 'selected' : '' ?>>Disabled</option>
+          <option value="daily" <?= $current_schedule === 'daily' ? 'selected' : '' ?>>Daily</option>
+          <option value="weekly" <?= $current_schedule === 'weekly' ? 'selected' : '' ?>>Weekly</option>
+          <option value="monthly" <?= $current_schedule === 'monthly' ? 'selected' : '' ?>>Monthly</option>
+        </select>
+
+        <label style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;">Time:</label>
+        <?php
+          [$ch, $cm] = explode(':', $current_time);
+          $ch = (int)$ch; $cm = (int)$cm;
+          // Convert to 12-hour format for display
+          $display_hour = $ch === 0 ? 12 : ($ch > 12 ? $ch - 12 : $ch);
+          $ampm = $ch < 12 ? 'AM' : 'PM';
+        ?>
+        <div class="time-picker">
+          <!-- Hour -->
+          <div class="tp-field">
+            <button type="button" class="tp-arrow" onclick="tpAdjust('hour', 1)" aria-label="Increase hour">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+            </button>
+            <input type="text" class="tp-input" id="tp-hour" value="<?= sprintf('%02d', $display_hour) ?>" maxlength="2" oninput="tpValidate('hour')" onblur="tpPad('hour')" />
+            <button type="button" class="tp-arrow" onclick="tpAdjust('hour', -1)" aria-label="Decrease hour">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+          </div>
+
+          <span class="tp-sep">:</span>
+
+          <!-- Minute -->
+          <div class="tp-field">
+            <button type="button" class="tp-arrow" onclick="tpAdjust('minute', 5)" aria-label="Increase minute">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+            </button>
+            <input type="text" class="tp-input" id="tp-minute" value="<?= sprintf('%02d', $cm) ?>" maxlength="2" oninput="tpValidate('minute')" onblur="tpPad('minute')" />
+            <button type="button" class="tp-arrow" onclick="tpAdjust('minute', -5)" aria-label="Decrease minute">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+          </div>
+
+          <!-- AM/PM toggle -->
+          <button type="button" class="tp-ampm" id="tp-ampm" onclick="tpToggleAmPm()"><?= $ampm ?></button>
+
+          <!-- Hidden field that gets submitted -->
+          <input type="hidden" name="time_slot" id="tp-value" value="<?= htmlspecialchars($current_time) ?>">
+        </div>
+      </div>
+
+      <!-- Weekly: day selector -->
+      <div id="weekly-picker" style="<?= $current_schedule === 'weekly' ? '' : 'display:none;' ?>">
+        <label style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;display:block;">Days of the Week:</label>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <?php
+            $day_names = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+            foreach ($day_names as $i => $name):
+              $checked = in_array($i, $current_weekdays);
+          ?>
+            <label style="cursor:pointer;">
+              <input type="checkbox" name="weekdays[]" value="<?= $i ?>" <?= $checked ? 'checked' : '' ?> style="display:none;" onchange="this.nextElementSibling.style.background = this.checked ? 'var(--accent)' : 'var(--surface2)'; this.nextElementSibling.style.color = this.checked ? '#0d0f14' : 'var(--text)'; this.nextElementSibling.style.borderColor = this.checked ? 'var(--accent)' : 'var(--border)';">
+              <span style="display:inline-block;padding:6px 14px;background:<?= $checked ? 'var(--accent)' : 'var(--surface2)' ?>;color:<?= $checked ? '#0d0f14' : 'var(--text)' ?>;border:1px solid <?= $checked ? 'var(--accent)' : 'var(--border)' ?>;border-radius:var(--radius);font-size:12px;font-weight:500;font-family:'Space Mono',monospace;transition:all 0.15s;"><?= $name ?></span>
+            </label>
+          <?php endforeach; ?>
+        </div>
+      </div>
+
+      <!-- Monthly: day-of-month picker (calendar-style grid) -->
+      <div id="monthly-picker" style="<?= $current_schedule === 'monthly' ? '' : 'display:none;' ?>">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <label style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;">Days of the Month:</label>
+          <div style="display:flex;gap:6px;">
+            <button type="button" onclick="setMonthPreset('first')" style="padding:4px 10px;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:11px;cursor:pointer;font-family:'Space Mono',monospace;">1st</button>
+            <button type="button" onclick="setMonthPreset('mid')" style="padding:4px 10px;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:11px;cursor:pointer;font-family:'Space Mono',monospace;">15th</button>
+            <button type="button" onclick="setMonthPreset('bi')" style="padding:4px 10px;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:11px;cursor:pointer;font-family:'Space Mono',monospace;">1st &amp; 15th</button>
+            <button type="button" onclick="setMonthPreset('clear')" style="padding:4px 10px;background:var(--surface2);border:1px solid var(--border);color:var(--muted);border-radius:4px;font-size:11px;cursor:pointer;font-family:'Space Mono',monospace;">Clear</button>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(7, 1fr);gap:4px;max-width:400px;background:var(--surface2);padding:8px;border-radius:var(--radius);border:1px solid var(--border);">
+          <?php for ($d = 1; $d <= 31; $d++):
+            $checked = in_array($d, $current_days_of_month);
+            $warn = $d >= 29;  // Days that don't exist in all months
+          ?>
+            <label style="cursor:pointer;position:relative;">
+              <input type="checkbox" class="dom-check" name="days_of_month[]" value="<?= $d ?>" <?= $checked ? 'checked' : '' ?> style="display:none;" onchange="toggleDom(this)">
+              <span data-dom="<?= $d ?>" style="display:flex;align-items:center;justify-content:center;height:36px;background:<?= $checked ? 'var(--accent)' : 'var(--bg)' ?>;color:<?= $checked ? '#0d0f14' : ($warn ? 'var(--warn)' : 'var(--text)') ?>;border:1px solid <?= $checked ? 'var(--accent)' : 'var(--border)' ?>;border-radius:4px;font-size:13px;font-weight:500;font-family:'Space Mono',monospace;transition:all 0.12s;"><?= $d ?></span>
+            </label>
+          <?php endfor; ?>
+        </div>
+        <p style="font-size:11px;color:var(--muted);margin-top:8px;">
+          <span style="color:var(--warn)">Orange days</span> (29-31) don't exist in every month — backup will skip months where that day doesn't exist.
+        </p>
+      </div>
+
+      <div>
+        <button type="submit" class="btn btn-primary">Save Schedule</button>
+      </div>
     </form>
   </div>
+
+  <script>
+    // ── Time picker ─────────────────────────────────────
+    function tpSyncValue() {
+      let h = parseInt(document.getElementById('tp-hour').value) || 12;
+      let m = parseInt(document.getElementById('tp-minute').value) || 0;
+      const ampm = document.getElementById('tp-ampm').textContent;
+
+      // Convert 12h to 24h
+      if (ampm === 'AM') {
+        if (h === 12) h = 0;
+      } else {
+        if (h !== 12) h += 12;
+      }
+      document.getElementById('tp-value').value =
+        String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+    }
+
+    function tpAdjust(field, step) {
+      const input = document.getElementById('tp-' + field);
+      let v = parseInt(input.value) || 0;
+      const max = field === 'hour' ? 12 : 59;
+      const min = field === 'hour' ? 1 : 0;
+      v += step;
+      if (v > max) v = min;
+      if (v < min) v = max;
+      input.value = String(v).padStart(2, '0');
+      // When hour hits 12 via incrementing past 11, or 12->1 via AM/PM noon/midnight swap
+      if (field === 'hour' && (v === 12 && step === 1)) tpToggleAmPm();
+      tpSyncValue();
+    }
+
+    function tpValidate(field) {
+      const input = document.getElementById('tp-' + field);
+      let cleaned = input.value.replace(/\D/g, '');
+      const max = field === 'hour' ? 12 : 59;
+      const min = field === 'hour' ? 1 : 0;
+      if (cleaned === '') { tpSyncValue(); return; }
+      let v = parseInt(cleaned);
+      if (v > max) v = max;
+      if (field === 'hour' && v < min) v = min;
+      input.value = cleaned;
+      tpSyncValue();
+    }
+
+    function tpPad(field) {
+      const input = document.getElementById('tp-' + field);
+      let v = parseInt(input.value) || (field === 'hour' ? 12 : 0);
+      const max = field === 'hour' ? 12 : 59;
+      const min = field === 'hour' ? 1 : 0;
+      if (v > max) v = max;
+      if (v < min) v = min;
+      input.value = String(v).padStart(2, '0');
+      tpSyncValue();
+    }
+
+    function tpToggleAmPm() {
+      const btn = document.getElementById('tp-ampm');
+      btn.textContent = btn.textContent === 'AM' ? 'PM' : 'AM';
+      tpSyncValue();
+    }
+
+    function updateScheduleUI() {
+      const freq = document.getElementById('freq-select').value;
+      document.getElementById('weekly-picker').style.display = freq === 'weekly' ? '' : 'none';
+      document.getElementById('monthly-picker').style.display = freq === 'monthly' ? '' : 'none';
+    }
+
+    function toggleDom(input) {
+      const span = input.nextElementSibling;
+      const day = parseInt(span.dataset.dom);
+      const isWarn = day >= 29;
+      if (input.checked) {
+        span.style.background = 'var(--accent)';
+        span.style.color = '#0d0f14';
+        span.style.borderColor = 'var(--accent)';
+      } else {
+        span.style.background = 'var(--bg)';
+        span.style.color = isWarn ? 'var(--warn)' : 'var(--text)';
+        span.style.borderColor = 'var(--border)';
+      }
+    }
+
+    function setMonthPreset(preset) {
+      const map = {
+        'first': [1],
+        'mid':   [15],
+        'bi':    [1, 15],
+        'clear': []
+      };
+      const selected = map[preset] || [];
+      document.querySelectorAll('.dom-check').forEach(cb => {
+        cb.checked = selected.includes(parseInt(cb.value));
+        toggleDom(cb);
+      });
+    }
+  </script>
 
   <!-- Backup list -->
   <div class="panel">
@@ -361,7 +758,9 @@ function fmt_size($bytes): string {
     <ul class="backup-list">
       <?php foreach ($backups as $b): ?>
       <li class="backup-item" id="backup-<?= $b['id'] ?>">
-        <span class="backup-icon">📦</span>
+        <span class="backup-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+        </span>
         <div class="backup-info">
           <div class="backup-name"><?= htmlspecialchars($b['filename']) ?></div>
           <div class="backup-meta">

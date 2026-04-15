@@ -7,32 +7,60 @@ if (isset($_SESSION['user_id'])) {
     exit;
 }
 
+// ── Login rate limiting: 5 failed attempts per IP per 5 minutes ──
+$ip          = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+$rate_dir    = '/tmp/nas_login_attempts';
+@mkdir($rate_dir, 0700, true);
+$rate_file   = $rate_dir . '/' . hash('sha256', $ip);
+$now         = time();
+$window      = 300;   // 5 minutes
+$max_tries   = 5;
+
+$attempts = [];
+if (file_exists($rate_file)) {
+    $attempts = array_filter(
+        json_decode(file_get_contents($rate_file), true) ?: [],
+        fn($t) => $t > $now - $window
+    );
+}
+$locked_out = count($attempts) >= $max_tries;
+$retry_in   = $locked_out ? $window - ($now - min($attempts)) : 0;
+
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $username = trim($_POST['username'] ?? '');
-    $password = $_POST['password'] ?? '';
-
-    if ($username === '' || $password === '') {
-        $error = 'Please enter your username and password.';
+    if ($locked_out) {
+        $error = "Too many failed attempts. Try again in " . ceil($retry_in / 60) . " minute(s).";
     } else {
-        require_once 'db.php';
-        $stmt = $pdo->prepare('SELECT id, username, password, role FROM users WHERE username = ?');
-        $stmt->execute([$username]);
-        $user = $stmt->fetch();
+        $username = trim($_POST['username'] ?? '');
+        $password = $_POST['password'] ?? '';
 
-        if ($user && password_verify($password, $user['password'])) {
-            // Update last login
-            $pdo->prepare('UPDATE users SET last_login = NOW() WHERE id = ?')->execute([$user['id']]);
-
-            $_SESSION['user_id']   = $user['id'];
-            $_SESSION['username']  = $user['username'];
-            $_SESSION['role']      = $user['role'];
-
-            header('Location: index.php');
-            exit;
+        if ($username === '' || $password === '') {
+            $error = 'Please enter your username and password.';
         } else {
-            $error = 'Invalid username or password.';
+            require_once 'db.php';
+            $stmt = $pdo->prepare('SELECT id, username, password, role FROM users WHERE username = ?');
+            $stmt->execute([$username]);
+            $user = $stmt->fetch();
+
+            if ($user && password_verify($password, $user['password'])) {
+                @unlink($rate_file); // clear attempts on success
+                $pdo->prepare('UPDATE users SET last_login = NOW() WHERE id = ?')->execute([$user['id']]);
+
+                $_SESSION['user_id']   = $user['id'];
+                $_SESSION['username']  = $user['username'];
+                $_SESSION['role']      = $user['role'];
+
+                header('Location: index.php');
+                exit;
+            } else {
+                $attempts[] = $now;
+                file_put_contents($rate_file, json_encode(array_values($attempts)), LOCK_EX);
+                $remaining = $max_tries - count($attempts);
+                $error = $remaining > 0
+                    ? "Invalid username or password. ($remaining attempt(s) remaining)"
+                    : "Too many failed attempts. Try again in 5 minutes.";
+            }
         }
     }
 }
@@ -209,8 +237,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     transition: opacity 0.15s, transform 0.15s;
   }
 
-  button[type="submit"]:hover  { opacity: 0.88; transform: translateY(-1px); }
-  button[type="submit"]:active { opacity: 1;    transform: translateY(0); }
+  button[type="submit"]:hover  { opacity: 0.92; transform: translateY(-1px); box-shadow: 0 6px 20px rgba(79,255,176,0.25); }
+  button[type="submit"]:active { opacity: 1;    transform: translateY(0); box-shadow: 0 2px 6px rgba(79,255,176,0.15); }
 
   .footer {
     margin-top: 28px;
@@ -224,7 +252,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <body>
 <div class="card">
   <div class="logo">
-    <div class="logo-icon">🖴</div>
+    <div class="logo-icon">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0d0f14" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>
+    </div>
     <div class="logo-text">N<span>A</span>S</div>
   </div>
 
@@ -246,10 +276,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       <label for="password">Password</label>
       <input type="password" id="password" name="password" autocomplete="current-password">
     </div>
-    <button type="submit">Sign In →</button>
+    <button type="submit">Sign In</button>
   </form>
 
-  <div class="footer">NAS Server v1.0</div>
+  <div class="footer">
+    Need an account? <a href="/register.php" style="color:var(--accent);text-decoration:none;font-family:'DM Sans',sans-serif;font-weight:500;">Create one</a>
+  </div>
 </div>
 </body>
 </html>

@@ -11,7 +11,8 @@ services:
     volumes:
       - ./www:/var/www/html
       - ./uploads:/var/www/uploads
-      - backups:/var/www/backups
+      # Bind-mount backups to external folder so they survive container rebuilds
+      - ./external_backups:/var/www/backups
     depends_on:
       - db
     restart: unless-stopped
@@ -24,8 +25,10 @@ services:
       MYSQL_DATABASE: ${MYSQL_DATABASE}
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-    ports:
-      - "3306:3306"
+    # No host port exposed — MySQL is reachable only via Docker's internal
+    # network from the web and phpmyadmin containers. Closes external attack surface.
+    expose:
+      - "3306"
     volumes:
       - db_data:/var/lib/mysql
       - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -44,6 +47,15 @@ services:
       - db
     restart: unless-stopped
 
+  # Cloudflare Tunnel — exposes the NAS to a public HTTPS URL.
+  # Quick tunnel: no account or domain needed; URL prints in `docker logs nas-tunnel`.
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: nas-tunnel
+    command: tunnel --no-autoupdate --url http://web:80
+    depends_on:
+      - web
+    restart: unless-stopped
+
 volumes:
   db_data:
-  backups:
