@@ -321,17 +321,3 @@ docker exec nas-web php -r "echo password_hash('newpass', PASSWORD_BCRYPT);"
 ```
 
 ---
-
-## Project Requirements Coverage
-
-This project was built against the Project 2 brief. All requirements covered:
-
-- ✅ File management (upload/download/delete + folder ops)
-- ✅ User management (create/modify/delete + permissions)
-- ✅ System monitoring (disk, CPU, logs)
-- ✅ Backup and restore (scheduled + manual)
-- ✅ Linux + Apache + MySQL + PHP setup
-- ✅ Web interface (HTML/CSS/JS + PHP backend + MySQL)
-- ✅ Port forwarding (via Cloudflare Tunnel)
-- ✅ User access control (roles + auth + rate limiting)
-- ✅ Firewall + permissions (MySQL not exposed, app-level ACLs)
